@@ -7,6 +7,12 @@ import SwiftUI
 struct NotebookCoverView: View {
     let notebook: Notebook
 
+    /// Fonte usada no nome do caderno — na capa, no topo da tela quando o
+    /// caderno está aberto (ver `NotebookDetailView`), e também nas guias
+    /// de seção (ver `SectionTabsView`) — a mesma "Noteworthy" nos três
+    /// lugares.
+    static let titleFontName = "Noteworthy-Bold"
+
     /// Pequena rotação fixa por caderno (derivada do id, não muda entre
     /// renders) — dá a sensação de pilha de cadernos jogados casualmente.
     private var rotationDegrees: Double {
@@ -17,6 +23,11 @@ struct NotebookCoverView: View {
     private var sectionCountLabel: String {
         let count = notebook.sections.count
         return "\(count) \(count == 1 ? "seção" : "seções")"
+    }
+
+    /// Protegido diretamente, ou por pertencer a uma coleção protegida.
+    private var isProtected: Bool {
+        notebook.isLocked || (notebook.group?.isLocked ?? false)
     }
 
     var body: some View {
@@ -42,16 +53,26 @@ struct NotebookCoverView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Spacer()
                 Text(notebook.title)
-                    .font(.system(.title3, design: .rounded).weight(.heavy))
+                    .font(.custom(Self.titleFontName, size: 24))
                     .foregroundStyle(.white)
                     .shadow(color: .black.opacity(0.55), radius: 0, x: 1.5, y: 1.5)
                     .lineLimit(2)
-                    .minimumScaleFactor(0.8)
+                    .minimumScaleFactor(0.7)
                 Text(sectionCountLabel)
                     .font(.caption.weight(.bold))
                     .foregroundStyle(.white.opacity(0.85))
             }
             .padding(16)
+
+            if isProtected {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(7)
+                    .background(Color.black.opacity(0.55), in: Circle())
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
         }
         .aspectRatio(0.72, contentMode: .fit)
         .rotationEffect(.degrees(rotationDegrees))

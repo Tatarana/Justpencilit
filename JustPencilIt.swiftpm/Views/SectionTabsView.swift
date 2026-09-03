@@ -17,7 +17,10 @@ struct SectionTabsView: View {
                     Button {
                         selectedSectionID = section.id
                     } label: {
+                        // Mesma fonte "Noteworthy" usada no nome do caderno
+                        // (ver NotebookCoverView.titleFontName).
                         Text(section.title)
+                            .font(.custom(NotebookCoverView.titleFontName, size: 17))
                             .padding(.horizontal, 14)
                             .padding(.vertical, 8)
                             .background(

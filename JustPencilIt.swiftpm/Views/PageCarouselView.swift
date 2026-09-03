@@ -21,6 +21,14 @@ struct PageCarouselView: View {
     @State private var isAnimating = false
     @State private var showChrome = true
 
+    // Suavizar traços / desfazer — dois botões (ver `smoothControls`). Fica
+    // aqui (e não em NotebookDetailView) porque é o próprio carrossel quem
+    // sabe qual página está visível agora.
+    @State private var smoothTrigger = 0
+    @State private var undoSmoothTrigger = 0
+    // Quantas suavizações em sequência dá pra desfazer agora (até 3).
+    @State private var undoSmoothCount = 0
+
     private var pages: [NotebookPage] {
         section.sortedPages
     }
@@ -41,7 +49,10 @@ struct PageCarouselView: View {
                         },
                         onDragEnded: { translationX, velocityX in
                             handleDragEnded(translationX, velocityX: velocityX, width: geometry.size.width)
-                        }
+                        },
+                        smoothTrigger: smoothTrigger,
+                        undoSmoothTrigger: undoSmoothTrigger,
+                        undoSmoothCount: $undoSmoothCount
                     )
                     // Força a SwiftUI recriar a view (e seu @State de desenho)
                     // ao trocar de página/seção — sem isso, a view era reaproveitada
@@ -71,7 +82,13 @@ struct PageCarouselView: View {
                             PenToolbar(kind: $penKind, color: $penColor)
                         }
                         Spacer()
-                        pageNavPill
+                        ZStack {
+                            pageNavPill
+                            HStack {
+                                Spacer()
+                                smoothControls
+                            }
+                        }
                     }
                     .padding(14)
                     .transition(.opacity)
@@ -127,6 +144,55 @@ struct PageCarouselView: View {
         .padding(.vertical, 10)
         .background(.ultraThinMaterial, in: Capsule())
         .shadow(color: .black.opacity(0.25), radius: 6, x: 0, y: 3)
+    }
+
+    /// Dois botões empilhados: a varinha (suavizar) fica sempre disponível,
+    /// no mesmo lugar — dá pra suavizar de novo quantas vezes quiser, sem
+    /// precisar sair e voltar da página. O de desfazer só aparece por cima
+    /// dela quando existe alguma suavização recente pra reverter (e some
+    /// sozinho se você escrever algo novo depois de suavizar, pra não
+    /// arriscar desfazer e apagar esse traço novo).
+    ///
+    /// Guarda até 3 suavizações em sequência: cada toque no desfazer volta
+    /// uma de cada vez, da mais recente pra mais antiga. Com mais de uma
+    /// disponível, um numerozinho no canto do botão mostra quantas restam.
+    private var smoothControls: some View {
+        VStack(spacing: 10) {
+            if undoSmoothCount > 0 {
+                Button {
+                    undoSmoothTrigger += 1
+                } label: {
+                    Image(systemName: "arrow.uturn.backward")
+                        .font(.body.weight(.semibold))
+                        .frame(width: 34, height: 34)
+                        .background(.ultraThinMaterial, in: Circle())
+                        .shadow(color: .black.opacity(0.25), radius: 4, x: 0, y: 2)
+                        .foregroundStyle(Color.orange)
+                        .overlay(alignment: .topTrailing) {
+                            if undoSmoothCount > 1 {
+                                Text("\(undoSmoothCount)")
+                                    .font(.caption2.weight(.bold))
+                                    .foregroundStyle(.white)
+                                    .padding(4)
+                                    .background(Color.orange, in: Circle())
+                                    .offset(x: 6, y: -6)
+                            }
+                        }
+                }
+                .transition(.scale.combined(with: .opacity))
+            }
+
+            Button {
+                smoothTrigger += 1
+            } label: {
+                Image(systemName: "wand.and.stars")
+                    .font(.body.weight(.semibold))
+                    .frame(width: 34, height: 34)
+                    .background(.ultraThinMaterial, in: Circle())
+                    .shadow(color: .black.opacity(0.25), radius: 4, x: 0, y: 2)
+            }
+        }
+        .animation(.spring(response: 0.35, dampingFraction: 0.7), value: undoSmoothCount)
     }
 
     private var chromeToggleButton: some View {

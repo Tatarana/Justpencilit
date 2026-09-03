@@ -7,13 +7,22 @@ import SwiftUI
 struct RenameSheet: View {
     let originalTitle: String
     let onSave: (String) -> Void
+    var fieldLabel: String = "Nome do caderno"
+    var navigationTitleText: String = "Renomear caderno"
 
     @Environment(\.dismiss) private var dismiss
     @State private var title: String
     @FocusState private var isFocused: Bool
 
-    init(originalTitle: String, onSave: @escaping (String) -> Void) {
+    init(
+        originalTitle: String,
+        fieldLabel: String = "Nome do caderno",
+        navigationTitleText: String = "Renomear caderno",
+        onSave: @escaping (String) -> Void
+    ) {
         self.originalTitle = originalTitle
+        self.fieldLabel = fieldLabel
+        self.navigationTitleText = navigationTitleText
         self.onSave = onSave
         _title = State(initialValue: originalTitle)
     }
@@ -21,12 +30,12 @@ struct RenameSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                TextField("Nome do caderno", text: $title)
+                TextField(fieldLabel, text: $title)
                     .focused($isFocused)
                     .submitLabel(.done)
                     .onSubmit(save)
             }
-            .navigationTitle("Renomear caderno")
+            .navigationTitle(navigationTitleText)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

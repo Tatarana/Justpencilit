@@ -13,6 +13,14 @@ final class Notebook: Identifiable {
     // é o que permite ao SwiftData migrar automaticamente bancos salvos
     // antes desse campo existir, em vez de travar ao abrir o app.
     var coverColor: NotebookColor = NotebookColor.blue
+    // Grupo/estante ao qual esse caderno pertence (ex: Trabalho, Pessoal,
+    // RPG). Opcional — um caderno pode ficar sem grupo.
+    var group: NotebookGroup?
+    // Se true, abrir este caderno exige Face ID/Touch ID ou a senha do
+    // iPad primeiro (ver BiometricLock). Valor padrão aqui na declaração
+    // (não só no init) permite ao SwiftData migrar bancos salvos antes
+    // desse campo existir.
+    var isLocked: Bool = false
 
     @Relationship(deleteRule: .cascade, inverse: \Section.notebook)
     var sections: [Section] = []

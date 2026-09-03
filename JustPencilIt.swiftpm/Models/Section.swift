@@ -15,6 +15,11 @@ final class Section: Identifiable {
     @Relationship(deleteRule: .cascade, inverse: \NotebookPage.section)
     var pages: [NotebookPage] = []
 
+    // Memos de áudio etiquetados com esta seção (ver AudioMemo.section) —
+    // excluir a seção só remove a etiqueta, nunca apaga o áudio em si.
+    @Relationship(deleteRule: .nullify, inverse: \AudioMemo.section)
+    var audioMemos: [AudioMemo] = []
+
     init(title: String, order: Int, backgroundStyle: PageBackground = .blank) {
         self.id = UUID()
         self.title = title

@@ -7,6 +7,6 @@ struct JustPencilItApp: App {
         WindowGroup {
             NotebookListView()
         }
-        .modelContainer(for: [Notebook.self, Section.self, NotebookPage.self])
+        .modelContainer(for: [Notebook.self, NotebookGroup.self, Section.self, NotebookPage.self, AudioMemo.self])
     }
 }

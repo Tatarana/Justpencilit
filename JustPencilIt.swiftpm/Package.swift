@@ -6,7 +6,9 @@ import AppleProductTypes
 let package = Package(
     name: "JustPencilIt",
     platforms: [
-        .iOS("17.0")
+        // 26.0 pra poder usar o SpeechAnalyzer/SpeechTranscriber (áudio →
+        // texto dos memos de voz), que só existe a partir daqui.
+        .iOS("26.0")
     ],
     products: [
         .iOSApplication(
@@ -23,7 +25,10 @@ let package = Package(
                 .portrait,
                 .landscapeRight,
                 .landscapeLeft
-            ]
+            ],
+            // Chaves de uso (Face ID, microfone, reconhecimento de fala) —
+            // exigidas pelo sistema pra Face ID, gravar áudio e transcrever.
+            additionalInfoPlistContentFilePath: "Support/Info-Additions.plist"
         )
     ],
     targets: [

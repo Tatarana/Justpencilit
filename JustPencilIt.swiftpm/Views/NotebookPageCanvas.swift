@@ -14,7 +14,28 @@ struct NotebookPageCanvas: View {
     var onDragChanged: (CGFloat) -> Void = { _ in }
     var onDragEnded: (CGFloat, CGFloat) -> Void = { _, _ in }
 
+    // Disparados de fora (menu do caderno) pra suavizar os traços da página
+    // atual, ou desfazer a última suavização — incrementar o número é o
+    // sinal, o valor em si não importa.
+    var smoothTrigger: Int = 0
+    var undoSmoothTrigger: Int = 0
+    // Quantas suavizações dá pra desfazer agora (0...maxUndoSlots) — a UI
+    // usa isso pra mostrar/esconder o botão de desfazer e, se quiser, um
+    // contador.
+    @Binding var undoSmoothCount: Int
+
+    // Até 3 "fotos" do desenho, uma por suavização feita em sequência —
+    // desfazer sempre volta uma de cada vez, da mais recente pra mais
+    // antiga. Passar de 3 descarta a mais antiga (a de baixo da pilha).
+    private static let maxUndoSlots = 3
+
     @State private var drawing = PKDrawing()
+    @State private var preSmoothStack: [PKDrawing] = []
+    // Verdadeiro só durante a própria troca de `drawing` feita por
+    // applySmoothing()/undoSmoothing() — usado pra distinguir "o usuário
+    // desenhou algo novo" de "nós mesmos trocamos o desenho", já que os
+    // dois disparam o mesmo onChange(of: drawing).
+    @State private var isInternalDrawingUpdate = false
 
     private let outerPadding: CGFloat = 22
     private let cornerRadius: CGFloat = 12
@@ -53,7 +74,19 @@ struct NotebookPageCanvas: View {
         .onAppear(perform: load)
         .onChange(of: drawing) { _, newValue in
             save(newValue)
+            // Se a mudança veio do próprio usuário desenhando (não de nós
+            // suavizando/desfazendo), qualquer suavização anterior deixa de
+            // fazer sentido pra desfazer — desfazer agora apagaria o traço
+            // novo junto. Some o botão de desfazer nesse caso.
+            if isInternalDrawingUpdate {
+                isInternalDrawingUpdate = false
+            } else if !preSmoothStack.isEmpty {
+                preSmoothStack.removeAll()
+                undoSmoothCount = 0
+            }
         }
+        .onChange(of: smoothTrigger) { _, _ in applySmoothing() }
+        .onChange(of: undoSmoothTrigger) { _, _ in undoSmoothing() }
         .onDisappear {
             save(drawing)
         }
@@ -61,11 +94,31 @@ struct NotebookPageCanvas: View {
 
     private func load() {
         drawing = DrawingStore.load(fileName: page.drawingFileName)
+        // Desfazer é só pra suavização feita nesta mesma visita à página.
+        preSmoothStack.removeAll()
+        undoSmoothCount = 0
     }
 
     private func save(_ drawing: PKDrawing) {
         DrawingStore.save(drawing, fileName: page.drawingFileName)
         page.updatedAt = Date()
+    }
+
+    private func applySmoothing() {
+        preSmoothStack.append(drawing)
+        if preSmoothStack.count > Self.maxUndoSlots {
+            preSmoothStack.removeFirst()
+        }
+        isInternalDrawingUpdate = true
+        drawing = HandwritingSmoothing.smoothed(drawing, level: .medium)
+        undoSmoothCount = preSmoothStack.count
+    }
+
+    private func undoSmoothing() {
+        guard let previous = preSmoothStack.popLast() else { return }
+        isInternalDrawingUpdate = true
+        drawing = previous
+        undoSmoothCount = preSmoothStack.count
     }
 }
 
