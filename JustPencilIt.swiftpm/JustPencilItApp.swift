@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 
 @main
 struct JustPencilItApp: App {
@@ -6,5 +7,6 @@ struct JustPencilItApp: App {
         WindowGroup {
             NotebookListView()
         }
+        .modelContainer(for: [Notebook.self, Section.self, NotebookPage.self])
     }
 }

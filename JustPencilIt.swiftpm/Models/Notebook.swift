@@ -1,33 +1,31 @@
 import Foundation
+import SwiftData
 
-/// Um caderno: coleção de páginas desenhadas/escritas com a Apple Pencil.
-struct Notebook: Identifiable, Codable, Hashable {
-    let id: UUID
+/// Um caderno: coleção de seções (ex: "Física", "Matemática"), cada uma com
+/// suas próprias páginas. Persistido localmente via SwiftData.
+@Model
+final class Notebook: Identifiable {
+    @Attribute(.unique) var id: UUID
     var title: String
     var createdAt: Date
     var updatedAt: Date
-    var pageIDs: [UUID]
+    // Precisa do valor padrão aqui na própria declaração (não só no init) —
+    // é o que permite ao SwiftData migrar automaticamente bancos salvos
+    // antes desse campo existir, em vez de travar ao abrir o app.
+    var coverColor: NotebookColor = NotebookColor.blue
 
-    init(id: UUID = UUID(), title: String, pageIDs: [UUID] = []) {
-        self.id = id
+    @Relationship(deleteRule: .cascade, inverse: \Section.notebook)
+    var sections: [Section] = []
+
+    init(title: String, coverColor: NotebookColor = .blue) {
+        self.id = UUID()
         self.title = title
         self.createdAt = Date()
         self.updatedAt = Date()
-        self.pageIDs = pageIDs
+        self.coverColor = coverColor
     }
-}
 
-/// Uma página dentro de um caderno, contendo o desenho capturado via PencilKit.
-struct NotebookPage: Identifiable, Codable, Hashable {
-    let id: UUID
-    var notebookID: UUID
-    var drawingData: Data // PKDrawing serializado
-    var order: Int
-
-    init(id: UUID = UUID(), notebookID: UUID, drawingData: Data = Data(), order: Int) {
-        self.id = id
-        self.notebookID = notebookID
-        self.drawingData = drawingData
-        self.order = order
+    var sortedSections: [Section] {
+        sections.sorted { $0.order < $1.order }
     }
 }
