@@ -66,6 +66,12 @@ final class AudioRecorderService: NSObject {
         meterTask?.cancel()
         isRecording = false
         let finalDuration = startDate.map { Date().timeIntervalSince($0) } ?? elapsedTime
+        // O AVAudioRecorder grava o arquivo sozinho (não passa por um
+        // Data.write nosso), então a proteção de dados é aplicada aqui,
+        // depois que ele termina de escrever.
+        if let fileName = pendingFileName {
+            FileProtection.apply(to: AudioStore.url(for: fileName))
+        }
         self.recorder = nil
         self.startDate = nil
         return finalDuration

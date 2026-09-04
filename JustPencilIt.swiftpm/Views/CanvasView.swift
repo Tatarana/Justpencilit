@@ -11,6 +11,14 @@ import PencilKit
 /// A entrada por dedo é reservada pra navegação (rolar a página, puxar pra
 /// virar de página) — só a Apple Pencil desenha.
 struct CanvasView: UIViewRepresentable {
+    // Preferências da tela de Ajustes — cada view que precisa delas declara
+    // seu próprio @AppStorage com a mesma chave (ver AppSettingsKeys em
+    // SettingsView.swift), sem precisar passar como parâmetro por toda a
+    // cadeia NotebookPageCanvas → PageCarouselView → CanvasView.
+    @AppStorage(AppSettingsKeys.penStrokeWidth) private var penWidthMultiplier: Double = 1.0
+    @AppStorage(AppSettingsKeys.markerStrokeWidth) private var markerWidthMultiplier: Double = 1.0
+    @AppStorage(AppSettingsKeys.leftHandedMode) private var isLeftHanded: Bool = false
+
     @Binding var drawing: PKDrawing
 
     // .pencilOnly: só a Pencil desenha. O dedo fica livre pra rolar a
@@ -46,6 +54,14 @@ struct CanvasView: UIViewRepresentable {
         return CGSize(width: size.width, height: size.height * pageHeightMultiplier)
     }
 
+    private var currentWidthMultiplier: CGFloat {
+        switch penKind {
+        case .pen: return CGFloat(penWidthMultiplier)
+        case .marker: return CGFloat(markerWidthMultiplier)
+        case .eraser: return 1.0
+        }
+    }
+
     func makeUIView(context: Context) -> PKCanvasView {
         let canvasView = PKCanvasView()
         canvasView.drawing = drawing
@@ -58,7 +74,7 @@ struct CanvasView: UIViewRepresentable {
         // a se comportar sempre como modo claro — assim a cor escolhida na
         // PenToolbar é sempre a cor que de fato aparece no papel.
         canvasView.overrideUserInterfaceStyle = .light
-        canvasView.tool = penKind.makeTool(color: penColor)
+        canvasView.tool = penKind.makeTool(color: penColor, widthMultiplier: currentWidthMultiplier)
         canvasView.delegate = context.coordinator
         canvasView.isScrollEnabled = true
         canvasView.alwaysBounceVertical = true
@@ -69,8 +85,9 @@ struct CanvasView: UIViewRepresentable {
         if isActive {
             canvasView.becomeFirstResponder()
         }
-        context.coordinator.updateMargin(for: canvasView, background: background, contentSize: resolvedContentSize)
+        context.coordinator.updateMargin(for: canvasView, background: background, contentSize: resolvedContentSize, isLeftHanded: isLeftHanded)
         context.coordinator.setUpPageTurnGesture(for: canvasView)
+        canvasView.undoManager?.removeAllActions()
         return canvasView
     }
 
@@ -82,17 +99,29 @@ struct CanvasView: UIViewRepresentable {
 
         if uiView.drawing != drawing {
             uiView.drawing = drawing
+            // O PencilKit registra sozinho uma ação no SEU PRÓPRIO undo
+            // manager (nativo do UIKit) a cada traço — sem saber que a gente
+            // já tem um sistema de undo próprio. Se deixarmos isso acumular,
+            // um gesto do sistema (3 dedos deslizando, por exemplo) aciona
+            // ESSE undo manager nativo por baixo dos panos e devolve de
+            // supetão traços que a gente já tinha "desfeito" pela nossa
+            // pilha — exatamente o bug relatado. Como o nosso `undoStack` é
+            // a única fonte de verdade, zeramos o manager nativo sempre que
+            // trocamos o desenho de fora (undo/suavizar/carregar página).
+            uiView.undoManager?.removeAllActions()
         }
         uiView.backgroundColor = background.makeBackgroundColor()
         // Reaplicado sempre — é barato, e garante que a ferramenta nunca
         // fique dessincronizada da PenToolbar (sem depender de um picker
-        // externo que poderia reverter pra outra cor sozinho).
-        uiView.tool = penKind.makeTool(color: penColor)
+        // externo que poderia reverter pra outra cor sozinho). Também
+        // reaplica a espessura, pra refletir na hora qualquer ajuste feito
+        // na tela de Ajustes enquanto o app está aberto.
+        uiView.tool = penKind.makeTool(color: penColor, widthMultiplier: currentWidthMultiplier)
         let newContentSize = contentSize(for: canvasSize)
         if newContentSize.width > 0, uiView.contentSize != newContentSize {
             uiView.contentSize = newContentSize
         }
-        context.coordinator.updateMargin(for: uiView, background: background, contentSize: uiView.contentSize)
+        context.coordinator.updateMargin(for: uiView, background: background, contentSize: uiView.contentSize, isLeftHanded: isLeftHanded)
 
         if isActive {
             if !uiView.isFirstResponder {
@@ -123,7 +152,7 @@ struct CanvasView: UIViewRepresentable {
             self.parent = parent
         }
 
-        func updateMargin(for canvasView: PKCanvasView, background: PageBackground, contentSize: CGSize) {
+        func updateMargin(for canvasView: PKCanvasView, background: PageBackground, contentSize: CGSize, isLeftHanded: Bool) {
             guard let marginX = background.marginX else {
                 marginLine.isHidden = true
                 return
@@ -132,12 +161,21 @@ struct CanvasView: UIViewRepresentable {
                 canvasView.insertSubview(marginLine, at: 0)
             }
             let height = max(contentSize.height, canvasView.bounds.height)
-            marginLine.frame = CGRect(x: marginX, y: 0, width: 1.5, height: height)
+            let width = max(contentSize.width, canvasView.bounds.width)
+            // Modo canhoto: espelha a margem pro lado direito da página, pra
+            // não ficar embaixo da mão de quem escreve com a esquerda.
+            let effectiveX = isLeftHanded ? width - marginX : marginX
+            marginLine.frame = CGRect(x: effectiveX, y: 0, width: 1.5, height: height)
             marginLine.isHidden = false
         }
 
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
             parent.drawing = canvasView.drawing
+            // Mesmo motivo do updateUIView: zera aqui também, a cada traço
+            // novo do próprio usuário, pra nunca deixar o undo manager
+            // nativo do PencilKit acumular ações que ele "acha" que ainda
+            // pode desfazer/refazer por conta própria.
+            canvasView.undoManager?.removeAllActions()
         }
 
         // MARK: - Gesto de "puxar" pra virar página

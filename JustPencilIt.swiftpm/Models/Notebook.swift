@@ -21,6 +21,10 @@ final class Notebook: Identifiable {
     // (não só no init) permite ao SwiftData migrar bancos salvos antes
     // desse campo existir.
     var isLocked: Bool = false
+    // Favoritado pra aparecer na estante "Favoritos" no topo da tela
+    // inicial, sem precisar navegar pelas coleções. Valor padrão aqui na
+    // declaração (não só no init) pelo mesmo motivo de isLocked acima.
+    var isFavorite: Bool = false
 
     @Relationship(deleteRule: .cascade, inverse: \Section.notebook)
     var sections: [Section] = []

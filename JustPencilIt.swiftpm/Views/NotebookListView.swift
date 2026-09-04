@@ -8,6 +8,7 @@ import SwiftData
 /// Dá pra arrastar um caderno de uma estante pra outra pra movê-lo.
 struct NotebookListView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.scenePhase) private var scenePhase
     @Query(sort: \Notebook.updatedAt, order: .reverse) private var notebooks: [Notebook]
     @Query(sort: \NotebookGroup.order) private var collections: [NotebookGroup]
 
@@ -25,6 +26,15 @@ struct NotebookListView: View {
     @State private var recordTrigger = 0
     @State private var scrollFraction: CGFloat = 0
     @State private var isShowingLibrary = false
+    @State private var isShowingSearch = false
+    @State private var isShowingSettings = false
+    // Preenchidos por um resultado de busca antes de navegar, pra abrir a
+    // seção/página certa (cadernos) ou o memo certo (áudios) — sempre
+    // reiniciados quando a navegação começa de outro lugar (toque normal
+    // numa capa, ou no rádio-gravador).
+    @State private var pendingSectionID: UUID?
+    @State private var pendingPageIndex: Int?
+    @State private var pendingAudioMemoID: UUID?
     // Navegação por código (em vez de só NavigationLink) — precisamos disso
     // pra poder pedir Face ID/senha ANTES de empurrar a tela do caderno,
     // quando ele (ou a coleção dele) está protegido.
@@ -33,8 +43,19 @@ struct NotebookListView: View {
 
     private let columns = [GridItem(.adaptive(minimum: 150, maximum: 210), spacing: 4)]
 
+    /// UUID fixo só pra identificar a estante "Favoritos" no estado de
+    /// colapsar/expandir — mesma ideia do `NotebookGroup.ungroupedShelfID`
+    /// lá embaixo, nunca é salvo em disco.
+    private static let favoritesShelfID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+
     private var ungroupedNotebooks: [Notebook] {
         notebooks.filter { $0.group == nil }
+    }
+
+    /// Cadernos favoritados, mais recente primeiro — igual a `notebooks`,
+    /// que já vem ordenada assim pela @Query.
+    private var favoriteNotebooks: [Notebook] {
+        notebooks.filter { $0.isFavorite }
     }
 
     var body: some View {
@@ -60,6 +81,10 @@ struct NotebookListView: View {
                     .frame(height: 0)
 
                     header
+
+                    if !favoriteNotebooks.isEmpty {
+                        favoritesShelf
+                    }
 
                     if notebooks.isEmpty {
                         ContentUnavailableView(
@@ -99,6 +124,20 @@ struct NotebookListView: View {
                 addButton
                     .padding(24)
 
+                // Lupa no canto inferior esquerdo — faz par com o "+" de
+                // novo caderno (inferior direito), longe do cabeçalho lá
+                // em cima (que rola junto com o conteúdo — um botão fixo
+                // ali em cima colidia com o ícone "Meus Cadernos").
+                VStack {
+                    Spacer()
+                    HStack(spacing: 12) {
+                        searchButton
+                        settingsButton
+                        Spacer()
+                    }
+                }
+                .padding(24)
+
                 VStack {
                     HStack {
                         Spacer()
@@ -107,6 +146,7 @@ struct NotebookListView: View {
                             // fitoteca (como uma janela por cima dela) — o
                             // rádio-gravador daqui leva pra lá primeiro.
                             recordTrigger += 1
+                            pendingAudioMemoID = nil
                             isShowingLibrary = true
                         }
                         .padding(.top, 8)
@@ -121,8 +161,18 @@ struct NotebookListView: View {
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: UUID.self) { notebookID in
                 if let notebook = notebooks.first(where: { $0.id == notebookID }) {
-                    NotebookDetailView(notebook: notebook)
+                    NotebookDetailView(
+                        notebook: notebook,
+                        initialSectionID: pendingSectionID,
+                        initialPageIndex: pendingPageIndex,
+                        onJumpElsewhere: { target in
+                            jumpElsewhere(target)
+                        }
+                    )
                 }
+            }
+            .sheet(isPresented: $isShowingSettings) {
+                SettingsView()
             }
             .sheet(item: $renamingNotebook) { notebook in
                 RenameSheet(originalTitle: notebook.title) { newTitle in
@@ -208,7 +258,43 @@ struct NotebookListView: View {
                 Text("Os cadernos dessa coleção não são apagados — eles só ficam sem coleção.")
             }
             .fullScreenCover(isPresented: $isShowingLibrary) {
-                AudioLibraryView()
+                AudioLibraryView(
+                    initialMemoID: pendingAudioMemoID,
+                    onJumpElsewhere: { target in
+                        isShowingLibrary = false
+                        jumpElsewhere(target)
+                    }
+                )
+            }
+            .fullScreenCover(isPresented: $isShowingSearch) {
+                SearchView(
+                    onSelectCollection: { _ in
+                        // Só fecha a busca — a coleção já fica visível
+                        // (com título e cadeado, se protegida) na tela
+                        // inicial, não precisa de mais navegação.
+                        isShowingSearch = false
+                    },
+                    onSelectNotebook: { notebook in
+                        isShowingSearch = false
+                        openNotebook(notebook)
+                    },
+                    onSelectSection: { section in
+                        isShowingSearch = false
+                        guard let notebook = section.notebook else { return }
+                        openNotebook(notebook, sectionID: section.id)
+                    },
+                    onSelectPage: { page in
+                        isShowingSearch = false
+                        guard let section = page.section, let notebook = section.notebook else { return }
+                        let index = section.sortedPages.firstIndex(where: { $0.id == page.id }) ?? 0
+                        openNotebook(notebook, sectionID: section.id, pageIndex: index)
+                    },
+                    onSelectAudioMemo: { memo in
+                        isShowingSearch = false
+                        pendingAudioMemoID = memo.id
+                        isShowingLibrary = true
+                    }
+                )
             }
             .onAppear {
                 // Ao abrir o app, coleções protegidas começam recolhidas —
@@ -219,7 +305,58 @@ struct NotebookListView: View {
                 didInitializeCollapsedShelves = true
                 collapsedShelfIDs.formUnion(collections.filter { $0.isLocked }.map { $0.id })
             }
+            .task {
+                // Varredura de páginas com OCR pendente — pega qualquer
+                // coisa que ficou pra trás (app fechado no meio, etc).
+                await OCRService.catchUpSweep(modelContext: modelContext)
+            }
+            .task(priority: .utility) {
+                // Garante que o arquivo do banco esteja protegido — os
+                // desenhos e áudios já nascem protegidos na escrita, não
+                // precisam de nenhum passo extra aqui.
+                FileProtection.protectDatabase(modelContext: modelContext)
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                guard newPhase == .active else { return }
+                Task { await OCRService.catchUpSweep(modelContext: modelContext) }
+            }
         }
+    }
+
+    private var searchButton: some View {
+        Button {
+            isShowingSearch = true
+        } label: {
+            ZStack {
+                Circle().fill(Color.black).offset(x: 2, y: 2)
+                Circle().fill(
+                    LinearGradient(colors: [Color.blue, Color.purple], startPoint: .topLeading, endPoint: .bottomTrailing)
+                )
+                Circle().strokeBorder(Color.black, lineWidth: 2.5)
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 20, weight: .bold))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 50, height: 50)
+        }
+        .accessibilityLabel("Buscar")
+    }
+
+    private var settingsButton: some View {
+        Button {
+            isShowingSettings = true
+        } label: {
+            ZStack {
+                Circle().fill(Color.black).offset(x: 2, y: 2)
+                Circle().fill(Color(.secondarySystemBackground))
+                Circle().strokeBorder(Color.black, lineWidth: 2.5)
+                Image(systemName: "gearshape.fill")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(.primary)
+            }
+            .frame(width: 44, height: 44)
+        }
+        .accessibilityLabel("Ajustes")
     }
 
     private var header: some View {
@@ -264,6 +401,53 @@ struct NotebookListView: View {
         .padding(.horizontal, 20)
         .padding(.top, 12)
         .padding(.bottom, 8)
+    }
+
+    /// Estante fixa no topo com os cadernos favoritados — mesma mecânica de
+    /// colapsar/expandir das outras estantes, mas sem menu de gerenciar e
+    /// sem aceitar arrastar-e-soltar (favoritar é só pelo menu do caderno).
+    private var favoritesShelf: some View {
+        let isExpanded = !collapsedShelfIDs.contains(Self.favoritesShelfID)
+        return VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    if isExpanded {
+                        collapsedShelfIDs.insert(Self.favoritesShelfID)
+                    } else {
+                        collapsedShelfIDs.remove(Self.favoritesShelfID)
+                    }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                    Image(systemName: "star.fill")
+                        .font(.caption)
+                        .foregroundStyle(Color.yellow)
+                    Text("Favoritos")
+                        .font(.custom("BradleyHandITCTT-Bold", size: 22))
+                        .foregroundStyle(.primary)
+                    Text("\(favoriteNotebooks.count)")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 10)
+
+            if isExpanded {
+                LazyVGrid(columns: columns, spacing: 4) {
+                    ForEach(favoriteNotebooks) { notebook in
+                        notebookCell(for: notebook)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 12)
+            }
+        }
     }
 
     /// Uma estante colapsável. `collection == nil` representa a estante
@@ -460,6 +644,15 @@ struct NotebookListView: View {
             Label("Cor da capa", systemImage: "paintpalette")
         }
         Button {
+            notebook.isFavorite.toggle()
+        } label: {
+            if notebook.isFavorite {
+                Label("Remover dos favoritos", systemImage: "star.slash")
+            } else {
+                Label("Favoritar", systemImage: "star")
+            }
+        }
+        Button {
             toggleNotebookLock(notebook)
         } label: {
             if notebook.isLocked {
@@ -574,9 +767,37 @@ struct NotebookListView: View {
 
     /// Abre o caderno direto se ele (e a coleção dele) não estiver
     /// protegido; senão pede autenticação antes de empurrar a tela.
-    private func openNotebook(_ notebook: Notebook) {
+    /// `sectionID`/`pageIndex` vêm de um resultado de busca — deixam a tela
+    /// do caderno já abrir direto no lugar certo, em vez da primeira seção.
+    private func openNotebook(_ notebook: Notebook, sectionID: UUID? = nil, pageIndex: Int? = nil) {
+        pendingSectionID = sectionID
+        pendingPageIndex = pageIndex
         protectedNotebookAction(notebook, reason: "Desbloquear o caderno \"\(notebook.title)\"") {
             path.append(notebook.id)
+        }
+    }
+
+    /// Um resultado de busca tocado de DENTRO de outra tela (um caderno já
+    /// aberto, a fitoteca) chega até aqui pra decidir como navegar — volta
+    /// pra tela inicial primeiro (só ela tem o NavigationPath) e daí segue
+    /// pro alvo, exatamente como se a busca tivesse começado por aqui.
+    private func jumpElsewhere(_ target: SearchResult.Target) {
+        path.removeLast(path.count)
+        switch target {
+        case .collection:
+            break // já fica visível na tela inicial, sem navegação extra
+        case .notebook(let notebook):
+            openNotebook(notebook)
+        case .section(let section):
+            guard let notebook = section.notebook else { return }
+            openNotebook(notebook, sectionID: section.id)
+        case .page(let page):
+            guard let section = page.section, let notebook = section.notebook else { return }
+            let index = section.sortedPages.firstIndex(where: { $0.id == page.id }) ?? 0
+            openNotebook(notebook, sectionID: section.id, pageIndex: index)
+        case .audioMemo(let memo):
+            pendingAudioMemoID = memo.id
+            isShowingLibrary = true
         }
     }
 

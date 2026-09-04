@@ -16,9 +16,19 @@ struct AudioLibraryView: View {
     @Query(sort: \AudioMemo.createdAt, order: .reverse) private var memos: [AudioMemo]
     @Query private var notebooks: [Notebook]
 
+    // Preenchido quando se chega aqui vindo de um resultado de busca — abre
+    // esse memo automaticamente (respeitando a mesma trava de Face ID/senha
+    // de sempre, se ele estiver protegido).
+    var initialMemoID: UUID? = nil
+    // Chamado quando a busca daqui de dentro aponta pra algo que não é um
+    // áudio (um caderno, uma seção, uma página, uma coleção) — fecha esta
+    // tela e deixa quem a abriu (NotebookListView) decidir como navegar.
+    var onJumpElsewhere: (SearchResult.Target) -> Void = { _ in }
+
     @State private var path = NavigationPath()
     @State private var unlockedMemoIDs: Set<UUID> = []
     @State private var isShowingRecorder = false
+    @State private var isShowingSearch = false
 
     private let columns = [GridItem(.adaptive(minimum: 130, maximum: 180), spacing: 4)]
 
@@ -61,6 +71,18 @@ struct AudioLibraryView: View {
                 }
                 .padding(.top, 64)
                 .padding(.trailing, 18)
+
+                // Mesmo ícone e posição da lupa da tela inicial (canto
+                // inferior esquerdo), pra ser sempre o mesmo gesto em
+                // qualquer tela do app.
+                VStack {
+                    Spacer()
+                    HStack {
+                        searchButton
+                        Spacer()
+                    }
+                }
+                .padding(24)
             }
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
@@ -77,8 +99,33 @@ struct AudioLibraryView: View {
             // A grade (@Query) já atualiza sozinha quando o memo é salvo —
             // não precisa de nenhum gatilho extra aqui.
             AudioRecordingSheet {}
-                .presentationDetents([.medium, .large])
-                .presentationBackground(.ultraThinMaterial)
+        }
+        .fullScreenCover(isPresented: $isShowingSearch) {
+            SearchView(
+                onSelectCollection: { collection in handleSearchSelection(.collection(collection)) },
+                onSelectNotebook: { notebook in handleSearchSelection(.notebook(notebook)) },
+                onSelectSection: { section in handleSearchSelection(.section(section)) },
+                onSelectPage: { page in handleSearchSelection(.page(page)) },
+                onSelectAudioMemo: { memo in handleSearchSelection(.audioMemo(memo)) }
+            )
+        }
+        .onAppear {
+            guard let initialMemoID, let memo = memos.first(where: { $0.id == initialMemoID }) else { return }
+            open(memo)
+        }
+    }
+
+    /// Resultado de busca tocado dentro da fitoteca: outro áudio abre direto
+    /// aqui mesmo; qualquer outra coisa (caderno, seção, página, coleção)
+    /// fecha esta tela e delega a navegação pra quem a abriu.
+    private func handleSearchSelection(_ target: SearchResult.Target) {
+        isShowingSearch = false
+        switch target {
+        case .audioMemo(let memo):
+            open(memo)
+        default:
+            dismiss()
+            onJumpElsewhere(target)
         }
     }
 
@@ -101,7 +148,7 @@ struct AudioLibraryView: View {
             .frame(width: 44, height: 44)
 
             VStack(alignment: .leading, spacing: 0) {
-                Text("Ideias gravadas")
+                Text("Ideias Faladas")
                     .font(.system(.title, design: .rounded).weight(.heavy))
                 if !memos.isEmpty {
                     Text("\(memos.count) \(memos.count == 1 ? "áudio" : "áudios")")
@@ -126,6 +173,25 @@ struct AudioLibraryView: View {
         .padding(.horizontal, 16)
         .padding(.top, 12)
         .padding(.bottom, 8)
+    }
+
+    private var searchButton: some View {
+        Button {
+            isShowingSearch = true
+        } label: {
+            ZStack {
+                Circle().fill(Color.black).offset(x: 2, y: 2)
+                Circle().fill(
+                    LinearGradient(colors: [Color.blue, Color.purple], startPoint: .topLeading, endPoint: .bottomTrailing)
+                )
+                Circle().strokeBorder(Color.black, lineWidth: 2.5)
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 20, weight: .bold))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 50, height: 50)
+        }
+        .accessibilityLabel("Buscar")
     }
 
     private func open(_ memo: AudioMemo) {

@@ -14,6 +14,9 @@ struct PageCarouselView: View {
     var isActive: Bool = true
     @Binding var penKind: PenKind
     @Binding var penColor: PenColor
+    /// Troca pra grade de miniaturas (ver PageGridView) — de lá dá pra
+    /// selecionar várias páginas e movê-las pra outra seção.
+    var onShowGrid: () -> Void = {}
 
     // Ângulo de "dobra" da página — atualizado ao vivo durante o arrasto,
     // ou animado de 0 a 90 e de volta quando disparado pelos botões.
@@ -25,9 +28,12 @@ struct PageCarouselView: View {
     // aqui (e não em NotebookDetailView) porque é o próprio carrossel quem
     // sabe qual página está visível agora.
     @State private var smoothTrigger = 0
-    @State private var undoSmoothTrigger = 0
-    // Quantas suavizações em sequência dá pra desfazer agora (até 3).
-    @State private var undoSmoothCount = 0
+    @State private var undoTrigger = 0
+    @State private var redoTrigger = 0
+    // Quantos passos em sequência dá pra desfazer/refazer agora (até 20 —
+    // cada traço, apagão ou suavização conta como um passo).
+    @State private var undoCount = 0
+    @State private var redoCount = 0
 
     private var pages: [NotebookPage] {
         section.sortedPages
@@ -51,8 +57,10 @@ struct PageCarouselView: View {
                             handleDragEnded(translationX, velocityX: velocityX, width: geometry.size.width)
                         },
                         smoothTrigger: smoothTrigger,
-                        undoSmoothTrigger: undoSmoothTrigger,
-                        undoSmoothCount: $undoSmoothCount
+                        undoTrigger: undoTrigger,
+                        redoTrigger: redoTrigger,
+                        undoCount: $undoCount,
+                        redoCount: $redoCount
                     )
                     // Força a SwiftUI recriar a view (e seu @State de desenho)
                     // ao trocar de página/seção — sem isso, a view era reaproveitada
@@ -139,48 +147,76 @@ struct PageCarouselView: View {
                 Image(systemName: "plus")
                     .font(.body.weight(.semibold))
             }
+
+            Button(action: onShowGrid) {
+                Image(systemName: "square.grid.2x2")
+                    .font(.body.weight(.semibold))
+            }
         }
+        .buttonStyle(.plain)
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+        .foregroundStyle(.primary)
         .background(.ultraThinMaterial, in: Capsule())
         .shadow(color: .black.opacity(0.25), radius: 6, x: 0, y: 3)
     }
 
-    /// Dois botões empilhados: a varinha (suavizar) fica sempre disponível,
-    /// no mesmo lugar — dá pra suavizar de novo quantas vezes quiser, sem
-    /// precisar sair e voltar da página. O de desfazer só aparece por cima
-    /// dela quando existe alguma suavização recente pra reverter (e some
-    /// sozinho se você escrever algo novo depois de suavizar, pra não
-    /// arriscar desfazer e apagar esse traço novo).
-    ///
-    /// Guarda até 3 suavizações em sequência: cada toque no desfazer volta
-    /// uma de cada vez, da mais recente pra mais antiga. Com mais de uma
-    /// disponível, um numerozinho no canto do botão mostra quantas restam.
+    /// Três botões empilhados: desfazer, refazer (memória de até 20 passos
+    /// cada, mais recente primeiro) e suavizar. Desfazer/refazer ficam
+    /// sempre visíveis, só esmaecidos e desabilitados quando não há nada
+    /// pra fazer; com mais de um passo disponível, um numerozinho no canto
+    /// mostra quantos restam.
     private var smoothControls: some View {
         VStack(spacing: 10) {
-            if undoSmoothCount > 0 {
-                Button {
-                    undoSmoothTrigger += 1
-                } label: {
-                    Image(systemName: "arrow.uturn.backward")
-                        .font(.body.weight(.semibold))
-                        .frame(width: 34, height: 34)
-                        .background(.ultraThinMaterial, in: Circle())
-                        .shadow(color: .black.opacity(0.25), radius: 4, x: 0, y: 2)
-                        .foregroundStyle(Color.orange)
-                        .overlay(alignment: .topTrailing) {
-                            if undoSmoothCount > 1 {
-                                Text("\(undoSmoothCount)")
-                                    .font(.caption2.weight(.bold))
-                                    .foregroundStyle(.white)
-                                    .padding(4)
-                                    .background(Color.orange, in: Circle())
-                                    .offset(x: 6, y: -6)
-                            }
+            Button {
+                undoTrigger += 1
+            } label: {
+                Image(systemName: "arrow.uturn.backward")
+                    .font(.body.weight(.semibold))
+                    .frame(width: 34, height: 34)
+                    .foregroundStyle(undoCount > 0 ? Color.orange : Color.secondary)
+                    .background(.ultraThinMaterial, in: Circle())
+                    .shadow(color: .black.opacity(0.25), radius: 4, x: 0, y: 2)
+                    .overlay(alignment: .topTrailing) {
+                        if undoCount > 1 {
+                            Text("\(undoCount)")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(.white)
+                                .padding(4)
+                                .background(Color.orange, in: Circle())
+                                .offset(x: 6, y: -6)
                         }
-                }
-                .transition(.scale.combined(with: .opacity))
+                    }
             }
+            .buttonStyle(.plain)
+            .disabled(undoCount == 0)
+            .opacity(undoCount == 0 ? 0.45 : 1)
+            .accessibilityLabel("Desfazer")
+
+            Button {
+                redoTrigger += 1
+            } label: {
+                Image(systemName: "arrow.uturn.forward")
+                    .font(.body.weight(.semibold))
+                    .frame(width: 34, height: 34)
+                    .foregroundStyle(redoCount > 0 ? Color.orange : Color.secondary)
+                    .background(.ultraThinMaterial, in: Circle())
+                    .shadow(color: .black.opacity(0.25), radius: 4, x: 0, y: 2)
+                    .overlay(alignment: .topTrailing) {
+                        if redoCount > 1 {
+                            Text("\(redoCount)")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(.white)
+                                .padding(4)
+                                .background(Color.orange, in: Circle())
+                                .offset(x: 6, y: -6)
+                        }
+                    }
+            }
+            .buttonStyle(.plain)
+            .disabled(redoCount == 0)
+            .opacity(redoCount == 0 ? 0.45 : 1)
+            .accessibilityLabel("Refazer")
 
             Button {
                 smoothTrigger += 1
@@ -188,11 +224,34 @@ struct PageCarouselView: View {
                 Image(systemName: "wand.and.stars")
                     .font(.body.weight(.semibold))
                     .frame(width: 34, height: 34)
+                    .foregroundStyle(.primary)
                     .background(.ultraThinMaterial, in: Circle())
                     .shadow(color: .black.opacity(0.25), radius: 4, x: 0, y: 2)
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Suavizar traços")
+
+            if let currentPage {
+                Button {
+                    currentPage.isFavorite.toggle()
+                } label: {
+                    Image(systemName: currentPage.isFavorite ? "star.fill" : "star")
+                        .font(.body.weight(.semibold))
+                        .frame(width: 34, height: 34)
+                        .foregroundStyle(currentPage.isFavorite ? Color.yellow : Color.primary)
+                        .background(.ultraThinMaterial, in: Circle())
+                        .shadow(color: .black.opacity(0.25), radius: 4, x: 0, y: 2)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(currentPage.isFavorite ? "Remover dos favoritos" : "Favoritar página")
+            }
         }
-        .animation(.spring(response: 0.35, dampingFraction: 0.7), value: undoSmoothCount)
+        .animation(.spring(response: 0.35, dampingFraction: 0.7), value: undoCount)
+        .animation(.spring(response: 0.35, dampingFraction: 0.7), value: redoCount)
+    }
+
+    private var currentPage: NotebookPage? {
+        pages.indices.contains(selectedPageIndex) ? pages[selectedPageIndex] : nil
     }
 
     private var chromeToggleButton: some View {
@@ -204,9 +263,11 @@ struct PageCarouselView: View {
             Image(systemName: showChrome ? "eye.slash" : "eye")
                 .font(.body.weight(.semibold))
                 .frame(width: 34, height: 34)
+                .foregroundStyle(.primary)
                 .background(.ultraThinMaterial, in: Circle())
                 .shadow(color: .black.opacity(0.25), radius: 4, x: 0, y: 2)
         }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Arrastar com o dedo

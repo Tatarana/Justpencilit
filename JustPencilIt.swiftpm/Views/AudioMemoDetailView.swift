@@ -22,10 +22,10 @@ struct AudioMemoDetailView: View {
     var body: some View {
         // Nada de Form/List aqui: mesmo escondendo o fundo deles
         // (.scrollContentBackground(.hidden)), o iOS insiste em pintar um
-        // fundo praticamente opaco por baixo das linhas — foi por isso que
-        // o vidro fosco "não funcionou" da primeira vez. Um ScrollView com
-        // cards manuais dá controle total, igual ao painel lateral (que já
-        // funciona certinho).
+        // fundo praticamente opaco por baixo das linhas. Um ScrollView com
+        // cards manuais dá controle total sobre o visual — o vidro fosco
+        // (testado nesta tela e na de gravação) não se mostrou confiável
+        // como janela de verdade, então aqui ficou com cores sólidas.
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 playerCard
@@ -35,7 +35,7 @@ struct AudioMemoDetailView: View {
             }
             .padding(16)
         }
-        .background(.ultraThinMaterial)
+        .background(Color(.systemGroupedBackground))
         .navigationTitle("Memo de áudio")
         .navigationBarTitleDisplayMode(.inline)
         .onDisappear { player.stop() }
@@ -209,14 +209,12 @@ struct AudioMemoDetailView: View {
 }
 
 private extension View {
-    /// Card translúcido padrão desta tela — mesmo esquema do painel lateral
-    /// de áudios (fundo geral em `.ultraThinMaterial`, cards um pouco mais
-    /// opacos em `.regularMaterial` por cima, pra manter o texto legível).
+    /// Card padrão desta tela.
     func cardStyled() -> some View {
         self
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(16)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
     }
 }
 

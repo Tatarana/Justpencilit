@@ -12,6 +12,16 @@ struct PenToolbar: View {
     @Binding var kind: PenKind
     @Binding var color: PenColor
 
+    // Espessura de caneta/marcador — pertence à tela de Ajustes (mesma
+    // chave, ver AppSettingsKeys em SettingsView.swift), mas fica também
+    // acessível aqui, na hora do uso: segurar o dedo na ferramenta abre um
+    // slider rápido, sem precisar sair do caderno pra ajustar.
+    @AppStorage(AppSettingsKeys.penStrokeWidth) private var penWidthMultiplier: Double = 1.0
+    @AppStorage(AppSettingsKeys.markerStrokeWidth) private var markerWidthMultiplier: Double = 1.0
+    @State private var widthPopoverKind: PenKind?
+
+    private let widthRange: ClosedRange<Double> = 0.5...2.0
+
     var body: some View {
         HStack(spacing: 16) {
             HStack(spacing: 6) {
@@ -28,6 +38,23 @@ struct PenToolbar: View {
                             .foregroundStyle(kind == option ? Color.white : Color.primary)
                     }
                     .accessibilityLabel(option.label)
+                    // Só caneta e marcador têm espessura ajustável — a
+                    // borracha usa sempre o modo vetorial do PencilKit.
+                    // Segurar o dedo na ferramenta (já selecionada ou não)
+                    // abre um slider rápido, sem sair do caderno.
+                    .simultaneousGesture(
+                        LongPressGesture(minimumDuration: 0.4).onEnded { _ in
+                            guard option != .eraser else { return }
+                            kind = option
+                            widthPopoverKind = option
+                        }
+                    )
+                    .popover(item: Binding(
+                        get: { widthPopoverKind == option ? option : nil },
+                        set: { widthPopoverKind = $0 }
+                    )) { popoverKind in
+                        widthPopover(for: popoverKind)
+                    }
                 }
             }
 
@@ -63,5 +90,24 @@ struct PenToolbar: View {
         .padding(.vertical, 8)
         .background(.ultraThinMaterial, in: Capsule())
         .shadow(color: .black.opacity(0.25), radius: 6, x: 0, y: 3)
+    }
+
+    @ViewBuilder
+    private func widthPopover(for popoverKind: PenKind) -> some View {
+        let binding: Binding<Double> = popoverKind == .marker ? $markerWidthMultiplier : $penWidthMultiplier
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Espessura — \(popoverKind.label)")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Text("\(Int((binding.wrappedValue * 100).rounded()))%")
+                    .font(.footnote.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Slider(value: binding, in: widthRange, step: 0.05)
+                .frame(width: 220)
+        }
+        .padding(16)
+        .presentationCompactAdaptation(.popover)
     }
 }

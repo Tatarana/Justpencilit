@@ -6,6 +6,16 @@ import SwiftData
 /// direita) com os áudios/transcrições etiquetados à seção aberta.
 struct NotebookDetailView: View {
     @Bindable var notebook: Notebook
+    // Preenchidos quando se chega aqui vindo de um resultado de busca —
+    // fazem a tela já abrir direto na seção/página certa, em vez de sempre
+    // cair na primeira seção.
+    var initialSectionID: UUID? = nil
+    var initialPageIndex: Int? = nil
+    // Chamado quando a busca daqui de dentro aponta pra algo que não é
+    // desta mesma seção/deste mesmo caderno (outro caderno, uma coleção, um
+    // áudio) — quem constrói esta tela (NotebookListView) decide como
+    // navegar até lá, já que só ela tem o NavigationPath da tela inicial.
+    var onJumpElsewhere: (SearchResult.Target) -> Void = { _ in }
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \AudioMemo.createdAt) private var allAudioMemos: [AudioMemo]
 
@@ -18,6 +28,13 @@ struct NotebookDetailView: View {
     @State private var penKind: PenKind = .pen
     @State private var penColor: PenColor = .black
     @State private var isShowingAudioPanel = false
+    @State private var isShowingPageGrid = false
+    @State private var isShowingSearch = false
+    // Preenchido depois que um PDF termina de ser gerado (ver
+    // `protectedExportAction`) — dispara o `.sheet` de compartilhamento
+    // nativo (AirDrop, Mail, Salvar em Arquivos etc).
+    @State private var exportedPDFURL: URL?
+    @State private var isShowingShareSheet = false
 
     private var selectedSection: Section? {
         notebook.sortedSections.first { $0.id == selectedSectionID }
@@ -46,17 +63,46 @@ struct NotebookDetailView: View {
                     notebook: notebook,
                     selectedSectionID: $selectedSectionID,
                     onRename: { renamingSection = $0 },
-                    onDelete: deleteSection
+                    onDelete: deleteSection,
+                    onDropPages: { target, ids in
+                        movePages(idStrings: ids, to: target)
+                    }
                 )
                 Divider()
                 if let section = selectedSection {
-                    PageCarouselView(
-                        section: section,
-                        selectedPageIndex: $selectedPageIndex,
-                        isActive: !isEditingAnything,
-                        penKind: $penKind,
-                        penColor: $penColor
-                    )
+                    if isShowingPageGrid {
+                        PageGridView(
+                            section: section,
+                            otherSections: notebook.sortedSections.filter { $0.id != section.id },
+                            onOpenPage: { index in
+                                selectedPageIndex = index
+                                isShowingPageGrid = false
+                            },
+                            onMovePages: { ids, target in
+                                movePages(ids: ids, to: target)
+                            },
+                            onExportPages: { ids in
+                                exportPages(ids)
+                            },
+                            onDeletePages: { ids in
+                                deletePages(ids)
+                            },
+                            onClose: {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    isShowingPageGrid = false
+                                }
+                            }
+                        )
+                    } else {
+                        PageCarouselView(
+                            section: section,
+                            selectedPageIndex: $selectedPageIndex,
+                            isActive: !isEditingAnything,
+                            penKind: $penKind,
+                            penColor: $penColor,
+                            onShowGrid: { isShowingPageGrid = true }
+                        )
+                    }
                 } else {
                     ContentUnavailableView(
                         "Sem seções",
@@ -90,6 +136,14 @@ struct NotebookDetailView: View {
                     .font(.custom(NotebookCoverView.titleFontName, size: 22))
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    isShowingSearch = true
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                }
+                .accessibilityLabel("Buscar")
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
@@ -127,11 +181,21 @@ struct NotebookDetailView: View {
                         } label: {
                             Label("Fundo da seção", systemImage: "square.grid.3x3")
                         }
+                        Button {
+                            exportSection(section)
+                        } label: {
+                            Label("Exportar seção (PDF)", systemImage: "square.and.arrow.up")
+                        }
                         Button(role: .destructive) {
                             deleteCurrentPage()
                         } label: {
                             Label("Excluir página atual", systemImage: "trash")
                         }
+                    }
+                    Button {
+                        exportNotebook()
+                    } label: {
+                        Label("Exportar caderno inteiro (PDF)", systemImage: "doc.zipper")
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle")
@@ -178,6 +242,52 @@ struct NotebookDetailView: View {
                 }
             }
         }
+        .fullScreenCover(isPresented: $isShowingSearch) {
+            SearchView(
+                onSelectCollection: { collection in handleSearchSelection(.collection(collection)) },
+                onSelectNotebook: { targetNotebook in handleSearchSelection(.notebook(targetNotebook)) },
+                onSelectSection: { section in handleSearchSelection(.section(section)) },
+                onSelectPage: { page in handleSearchSelection(.page(page)) },
+                onSelectAudioMemo: { memo in handleSearchSelection(.audioMemo(memo)) }
+            )
+        }
+        .sheet(isPresented: $isShowingShareSheet) {
+            if let exportedPDFURL {
+                ShareSheet(items: [exportedPDFURL])
+            }
+        }
+    }
+
+    /// Resultado de busca tocado dentro do próprio caderno: se aponta pra
+    /// algo desta mesma seção/deste mesmo caderno, só ajusta a seleção
+    /// local (sem sair daqui); senão, delega pra quem construiu esta tela
+    /// decidir como chegar lá (`onJumpElsewhere`).
+    private func handleSearchSelection(_ target: SearchResult.Target) {
+        isShowingSearch = false
+        switch target {
+        case .collection:
+            onJumpElsewhere(target)
+        case .notebook(let targetNotebook):
+            guard targetNotebook.id != notebook.id else { return }
+            onJumpElsewhere(target)
+        case .section(let section):
+            if section.notebook?.id == notebook.id {
+                selectedSectionID = section.id
+                isShowingPageGrid = false
+            } else {
+                onJumpElsewhere(target)
+            }
+        case .page(let page):
+            if let section = page.section, section.notebook?.id == notebook.id {
+                selectedSectionID = section.id
+                selectedPageIndex = section.sortedPages.firstIndex(where: { $0.id == page.id }) ?? 0
+                isShowingPageGrid = false
+            } else {
+                onJumpElsewhere(target)
+            }
+        case .audioMemo:
+            onJumpElsewhere(target)
+        }
     }
 
     private func ensureAtLeastOneSection() {
@@ -190,7 +300,14 @@ struct NotebookDetailView: View {
             section.pages.append(page)
         }
         if selectedSectionID == nil {
-            selectedSectionID = notebook.sortedSections.first?.id
+            if let initialSectionID, notebook.sortedSections.contains(where: { $0.id == initialSectionID }) {
+                selectedSectionID = initialSectionID
+            } else {
+                selectedSectionID = notebook.sortedSections.first?.id
+            }
+            if let initialPageIndex {
+                selectedPageIndex = initialPageIndex
+            }
         }
     }
 
@@ -213,5 +330,97 @@ struct NotebookDetailView: View {
         DrawingStore.delete(fileName: page.drawingFileName)
         modelContext.delete(page)
         selectedPageIndex = max(0, selectedPageIndex - 1)
+    }
+
+    /// Move as páginas com esses ids (de qualquer seção deste caderno) pra
+    /// `target`, colocando-as no final — usado tanto pelo "Mover para" da
+    /// grade (várias de uma vez) quanto por soltar numa aba (uma ou várias,
+    /// se já estavam selecionadas).
+    private func movePages(ids: Set<UUID>, to target: Section) {
+        let allPages = notebook.sortedSections.flatMap { $0.sortedPages }
+        let toMove = allPages.filter { ids.contains($0.id) && $0.section?.id != target.id }
+        guard !toMove.isEmpty else { return }
+        var nextOrder = target.pages.count
+        for page in toMove {
+            page.section = target
+            page.order = nextOrder
+            nextOrder += 1
+        }
+    }
+
+    /// Mesma coisa, recebendo os ids como strings (vem do drag-and-drop,
+    /// que trafega `PageDragPayload.pageIDs: [String]`).
+    private func movePages(idStrings: [String], to target: Section) {
+        let ids = Set(idStrings.compactMap { UUID(uuidString: $0) })
+        movePages(ids: ids, to: target)
+    }
+
+    /// Apaga de vez as páginas selecionadas na grade — arquivo `.drawing`
+    /// em disco e registro no banco. A grade já confirma com a pessoa e já
+    /// trava o botão antes de chamar isto se a seleção fosse apagar TODAS
+    /// as páginas da seção; a segunda checagem aqui é só uma rede de
+    /// segurança extra, mesma regra do apagar a página atual no carrossel
+    /// (`deleteCurrentPage`) — uma seção nunca pode ficar com zero páginas.
+    private func deletePages(_ ids: Set<UUID>) {
+        guard let section = selectedSection else { return }
+        let pages = section.sortedPages
+        let toDelete = pages.filter { ids.contains($0.id) }
+        guard !toDelete.isEmpty, toDelete.count < pages.count else { return }
+        for page in toDelete {
+            DrawingStore.delete(fileName: page.drawingFileName)
+            modelContext.delete(page)
+        }
+        let remaining = max(section.sortedPages.count - 1, 0)
+        selectedPageIndex = min(selectedPageIndex, remaining)
+    }
+
+    // MARK: - Exportar em PDF
+
+    private func exportSection(_ section: Section) {
+        protectedExportAction {
+            guard let url = PDFExportService.export(section: section) else { return }
+            presentShareSheet(for: url)
+        }
+    }
+
+    private func exportNotebook() {
+        protectedExportAction {
+            guard let url = PDFExportService.export(notebook: notebook) else { return }
+            presentShareSheet(for: url)
+        }
+    }
+
+    /// Exportação de uma seleção feita na grade de miniaturas — as páginas
+    /// podem vir de qualquer seção deste caderno, então procura entre todas.
+    private func exportPages(_ ids: Set<UUID>) {
+        protectedExportAction {
+            let allPages = notebook.sortedSections.flatMap { $0.sortedPages }
+            let selected = allPages.filter { ids.contains($0.id) }
+            guard let url = PDFExportService.export(pages: selected, suggestedName: notebook.title) else { return }
+            presentShareSheet(for: url)
+        }
+    }
+
+    private func presentShareSheet(for url: URL) {
+        exportedPDFURL = url
+        isShowingShareSheet = true
+    }
+
+    /// Exportar é o próprio ato de tirar conteúdo do app (AirDrop, e-mail,
+    /// Arquivos) — por isso SEMPRE pede Face ID/senha de novo quando o
+    /// caderno (ou a coleção dele) está protegido, mesmo que a pessoa já
+    /// tenha desbloqueado uma vez só pra abrir o caderno nesta visita. As
+    /// outras ações daqui de dentro (renomear, excluir página) não pedem de
+    /// novo porque não fazem o conteúdo sair do app.
+    private func protectedExportAction(_ action: @escaping () -> Void) {
+        let isProtected = notebook.isLocked || (notebook.group?.isLocked ?? false)
+        guard isProtected else {
+            action()
+            return
+        }
+        Task {
+            let success = await BiometricLock.authenticate(reason: "Exportar conteúdo de \"\(notebook.title)\"")
+            if success { action() }
+        }
     }
 }

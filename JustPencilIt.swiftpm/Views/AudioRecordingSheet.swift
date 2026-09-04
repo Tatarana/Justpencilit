@@ -36,10 +36,6 @@ struct AudioRecordingSheet: View {
                 recordingControls
             }
         }
-        // Reforça o material aqui, além do .presentationBackground onde
-        // esta tela é aberta — cinto e suspensório, pra garantir o vidro
-        // fosco mesmo se um dos dois não pegar sozinho.
-        .background(.ultraThinMaterial)
         .task {
             guard !didStart else { return }
             didStart = true

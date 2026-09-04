@@ -28,7 +28,7 @@ enum DrawingStore {
     static func save(_ drawing: PKDrawing, fileName: String) {
         let fileURL = url(for: fileName)
         do {
-            try drawing.dataRepresentation().write(to: fileURL, options: .atomic)
+            try drawing.dataRepresentation().write(to: fileURL, options: FileProtection.writingOptions)
         } catch {
             print("DrawingStore: falha ao salvar \(fileName): \(error)")
         }

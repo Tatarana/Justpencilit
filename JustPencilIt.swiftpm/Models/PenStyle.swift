@@ -45,12 +45,17 @@ enum PenKind: String, CaseIterable, Identifiable {
         }
     }
 
-    func makeTool(color: PenColor) -> PKTool {
+    /// `widthMultiplier` escala a espessura padrão da ferramenta do
+    /// PencilKit (ajuste vindo da tela de Ajustes) — 1.0 mantém o padrão de
+    /// fábrica; não afeta a borracha, que não tem espessura ajustável aqui.
+    func makeTool(color: PenColor, widthMultiplier: CGFloat = 1.0) -> PKTool {
         switch self {
         case .pen:
-            return PKInkingTool(.pen, color: color.uiColor)
+            let base = PKInkingTool(.pen, color: color.uiColor)
+            return PKInkingTool(.pen, color: color.uiColor, width: base.width * widthMultiplier)
         case .marker:
-            return PKInkingTool(.marker, color: color.uiColor)
+            let base = PKInkingTool(.marker, color: color.uiColor)
+            return PKInkingTool(.marker, color: color.uiColor, width: base.width * widthMultiplier)
         case .eraser:
             return PKEraserTool(.vector)
         }

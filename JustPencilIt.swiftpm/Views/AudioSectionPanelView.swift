@@ -47,12 +47,6 @@ struct AudioSectionPanelView: View {
         .background(.ultraThinMaterial)
         .sheet(isPresented: $isShowingRecorder) {
             AudioRecordingSheet(onFinished: {}, initialSection: section)
-                // Numa janela em tela cheia não sobra nada visível ao redor
-                // pro material borrar — por isso o vidro fosco não aparecia.
-                // Com um tamanho médio, dá pra ver o que fica ao redor/atrás
-                // de verdade, e o efeito passa a existir.
-                .presentationDetents([.medium, .large])
-                .presentationBackground(.ultraThinMaterial)
         }
         .sheet(item: $openedMemo) { memo in
             NavigationStack {
@@ -60,8 +54,6 @@ struct AudioSectionPanelView: View {
                     openedMemo = nil
                 }
             }
-            .presentationDetents([.medium, .large])
-            .presentationBackground(.ultraThinMaterial)
         }
     }
 

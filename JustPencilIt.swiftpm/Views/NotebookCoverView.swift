@@ -73,6 +73,15 @@ struct NotebookCoverView: View {
                     .padding(10)
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
+
+            if notebook.isFavorite {
+                Image(systemName: "star.fill")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(.yellow)
+                    .padding(7)
+                    .background(Color.black.opacity(0.55), in: Circle())
+                    .padding(10)
+            }
         }
         .aspectRatio(0.72, contentMode: .fit)
         .rotationEffect(.degrees(rotationDegrees))
