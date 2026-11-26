@@ -25,6 +25,12 @@ final class Notebook: Identifiable {
     // inicial, sem precisar navegar pelas coleções. Valor padrão aqui na
     // declaração (não só no init) pelo mesmo motivo de isLocked acima.
     var isFavorite: Bool = false
+    // Marcador de página: a página onde o caderno abre direto. Só um por
+    // caderno. Opcional com padrão nil — migra bancos antigos sem travar.
+    var bookmarkedPageID: UUID? = nil
+    // Tipo de papel das seções novas deste caderno. nil = segue o padrão
+    // geral dos Ajustes. Opcional com padrão nil pelo mesmo motivo acima.
+    var defaultBackground: PageBackground? = nil
 
     @Relationship(deleteRule: .cascade, inverse: \Section.notebook)
     var sections: [Section] = []
@@ -35,6 +41,11 @@ final class Notebook: Identifiable {
         self.createdAt = Date()
         self.updatedAt = Date()
         self.coverColor = coverColor
+    }
+
+    /// Papel que uma seção nova deste caderno deve usar.
+    var effectiveDefaultBackground: PageBackground {
+        defaultBackground ?? PageBackground.appDefault
     }
 
     var sortedSections: [Section] {

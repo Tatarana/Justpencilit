@@ -19,7 +19,11 @@ struct AudioSectionPanelView: View {
 
     private var memos: [AudioMemo] {
         guard let section else { return [] }
-        return allMemos.filter { $0.section?.id == section.id }
+        // Este painel não tem Face ID/senha próprios — diferente da
+        // fitoteca, que só revela título/duração depois de desbloquear. Pra
+        // não vazar memos protegidos aqui (sem nenhuma trava própria), eles
+        // simplesmente não aparecem nesta lista.
+        return allMemos.filter { $0.section?.id == section.id && !$0.isProtected }
     }
 
     var body: some View {

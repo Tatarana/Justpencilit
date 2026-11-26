@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import UIKit
 
 /// Tela de um caderno aberto: abas de seção no topo, carrossel de páginas
 /// da seção selecionada embaixo, e um painel lateral opcional (desliza da
@@ -25,6 +26,7 @@ struct NotebookDetailView: View {
     @State private var renamingSection: Section?
     @State private var editingBackgroundSection: Section?
     @State private var isEditingCoverColor = false
+    @State private var isEditingNotebookPaper = false
     @State private var penKind: PenKind = .pen
     @State private var penColor: PenColor = .black
     @State private var isShowingAudioPanel = false
@@ -130,6 +132,9 @@ struct NotebookDetailView: View {
         // pra tela aberta.
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
+        // Sem o gesto de "voltar" deslizando: arrastar pra virar pra página
+        // anterior acabava saindo do caderno. Pra sair, só o botão de voltar.
+        .background(BackSwipeBlocker())
         .toolbar {
             ToolbarItem(placement: .principal) {
                 Text(notebook.title)
@@ -175,6 +180,11 @@ struct NotebookDetailView: View {
                     } label: {
                         Label("Cor da capa", systemImage: "paintpalette")
                     }
+                    Button {
+                        isEditingNotebookPaper = true
+                    } label: {
+                        Label("Papel padrão do caderno", systemImage: "doc.plaintext")
+                    }
                     if let section = selectedSection {
                         Button {
                             editingBackgroundSection = section
@@ -203,6 +213,23 @@ struct NotebookDetailView: View {
             }
         }
         .onAppear(perform: ensureAtLeastOneSection)
+        .confirmationDialog(
+            "Papel padrão do caderno",
+            isPresented: $isEditingNotebookPaper,
+            titleVisibility: .visible
+        ) {
+            Button("Igual ao padrão geral (\(PageBackground.appDefault.label))") {
+                notebook.defaultBackground = nil
+            }
+            ForEach(PageBackground.allCases) { style in
+                Button(style.label) {
+                    notebook.defaultBackground = style
+                }
+            }
+            Button("Cancelar", role: .cancel) {}
+        } message: {
+            Text("Vale pras seções novas deste caderno. As que já existem não mudam (pra trocar uma delas, use \"Fundo da seção\").")
+        }
         .sheet(isPresented: $isRenamingNotebook) {
             RenameSheet(originalTitle: notebook.title) { newTitle in
                 notebook.title = newTitle
@@ -292,7 +319,7 @@ struct NotebookDetailView: View {
 
     private func ensureAtLeastOneSection() {
         if notebook.sections.isEmpty {
-            let section = Section(title: "Geral", order: 0)
+            let section = Section(title: "Geral", order: 0, backgroundStyle: notebook.effectiveDefaultBackground)
             section.notebook = notebook
             notebook.sections.append(section)
             let page = NotebookPage(order: 0)
@@ -302,13 +329,31 @@ struct NotebookDetailView: View {
         if selectedSectionID == nil {
             if let initialSectionID, notebook.sortedSections.contains(where: { $0.id == initialSectionID }) {
                 selectedSectionID = initialSectionID
+                if let initialPageIndex {
+                    selectedPageIndex = initialPageIndex
+                }
+            } else if let bookmark = bookmarkedLocation() {
+                // Abre direto na página marcada.
+                selectedSectionID = bookmark.sectionID
+                selectedPageIndex = bookmark.pageIndex
             } else {
                 selectedSectionID = notebook.sortedSections.first?.id
-            }
-            if let initialPageIndex {
-                selectedPageIndex = initialPageIndex
+                if let initialPageIndex {
+                    selectedPageIndex = initialPageIndex
+                }
             }
         }
+    }
+
+    /// Seção e posição da página marcada, se o marcador ainda existir.
+    private func bookmarkedLocation() -> (sectionID: UUID, pageIndex: Int)? {
+        guard let pageID = notebook.bookmarkedPageID else { return nil }
+        for section in notebook.sortedSections {
+            if let index = section.sortedPages.firstIndex(where: { $0.id == pageID }) {
+                return (section.id, index)
+            }
+        }
+        return nil
     }
 
     private func deleteSection(_ section: Section) {
@@ -421,6 +466,34 @@ struct NotebookDetailView: View {
         Task {
             let success = await BiometricLock.authenticate(reason: "Exportar conteúdo de \"\(notebook.title)\"")
             if success { action() }
+        }
+    }
+}
+
+
+/// Desliga o gesto de deslizar pra voltar (da borda e, no iOS 26, de
+/// qualquer ponto da tela) enquanto o caderno está aberto, e religa ao sair.
+private struct BackSwipeBlocker: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> Controller {
+        Controller()
+    }
+
+    func updateUIViewController(_ uiViewController: Controller, context: Context) {}
+
+    final class Controller: UIViewController {
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            setBackSwipe(enabled: false)
+        }
+
+        override func viewWillDisappear(_ animated: Bool) {
+            super.viewWillDisappear(animated)
+            setBackSwipe(enabled: true)
+        }
+
+        private func setBackSwipe(enabled: Bool) {
+            navigationController?.interactivePopGestureRecognizer?.isEnabled = enabled
+            navigationController?.interactiveContentPopGestureRecognizer?.isEnabled = enabled
         }
     }
 }

@@ -121,8 +121,20 @@ struct NotebookListView: View {
                     withAnimation(.easeOut(duration: 0.25)) { scrollFraction = normalized }
                 }
 
-                addButton
-                    .padding(24)
+                // Rádio-gravador ao lado do "+" (antes ficava fixo no canto
+                // superior direito e cobria o botão de nova coleção).
+                HStack(alignment: .bottom, spacing: 20) {
+                    RadioRecorderButton {
+                        // A gravação em si só abre de dentro da fitoteca
+                        // (como uma janela por cima dela) — o rádio-gravador
+                        // daqui leva pra lá primeiro.
+                        recordTrigger += 1
+                        pendingAudioMemoID = nil
+                        isShowingLibrary = true
+                    }
+                    addButton
+                }
+                .padding(24)
 
                 // Lupa no canto inferior esquerdo — faz par com o "+" de
                 // novo caderno (inferior direito), longe do cabeçalho lá
@@ -137,24 +149,12 @@ struct NotebookListView: View {
                     }
                 }
                 .padding(24)
-
-                VStack {
-                    HStack {
-                        Spacer()
-                        RadioRecorderButton {
-                            // A gravação em si agora só abre de dentro da
-                            // fitoteca (como uma janela por cima dela) — o
-                            // rádio-gravador daqui leva pra lá primeiro.
-                            recordTrigger += 1
-                            pendingAudioMemoID = nil
-                            isShowingLibrary = true
-                        }
-                        .padding(.top, 8)
-                        .padding(.trailing, 18)
-                    }
-                    Spacer()
-                }
             }
+            // O fundo (mascote) é sempre claro — então a tela de cadernos
+            // fica sempre em modo claro, senão no modo escuro do iPad os
+            // títulos ("Meus Cadernos", nomes das coleções) ficavam brancos
+            // e ilegíveis.
+            .environment(\.colorScheme, .light)
             .background(Color(.systemGroupedBackground))
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
@@ -389,13 +389,38 @@ struct NotebookListView: View {
 
             Spacer()
 
+            // Mesmo estilo mangá dos outros botões (contorno preto grosso,
+            // sombra dura): pilha de cadernos com um "+" amarelo de adesivo.
             Button(action: addCollection) {
-                Image(systemName: "folder.badge.plus")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .frame(width: 36, height: 36)
-                    .background(Circle().fill(Color(.secondarySystemBackground)))
+                ZStack(alignment: .topTrailing) {
+                    ZStack {
+                        Circle().fill(Color.black).offset(x: 2, y: 2)
+                        Circle().fill(
+                            LinearGradient(
+                                colors: [Color.green, Color.teal],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        Circle().strokeBorder(Color.black, lineWidth: 2.5)
+                        Image(systemName: "books.vertical.fill")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundStyle(.white)
+                    }
+                    .frame(width: 44, height: 44)
+
+                    ZStack {
+                        Circle().fill(Color.yellow)
+                        Circle().strokeBorder(Color.black, lineWidth: 2)
+                        Image(systemName: "plus")
+                            .font(.system(size: 10, weight: .heavy))
+                            .foregroundStyle(.black)
+                    }
+                    .frame(width: 20, height: 20)
+                    .offset(x: 5, y: -5)
+                }
             }
+            .buttonStyle(.plain)
             .accessibilityLabel("Nova coleção")
         }
         .padding(.horizontal, 20)
@@ -703,7 +728,7 @@ struct NotebookListView: View {
             title: "Caderno \(notebooks.count + 1)",
             coverColor: NotebookColor.forOrder(notebooks.count)
         )
-        let section = Section(title: "Geral", order: 0)
+        let section = Section(title: "Geral", order: 0, backgroundStyle: notebook.effectiveDefaultBackground)
         section.notebook = notebook
         notebook.sections.append(section)
         let page = NotebookPage(order: 0)

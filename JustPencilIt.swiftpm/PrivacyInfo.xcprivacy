@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- O app não rastreia o usuário nem coleta dados pra terceiros — tudo
+         fica local no aparelho (SwiftData + arquivos protegidos). -->
+    <key>NSPrivacyTracking</key>
+    <false/>
+    <key>NSPrivacyTrackingDomains</key>
+    <array/>
+    <key>NSPrivacyCollectedDataTypes</key>
+    <array/>
+    <!-- A Apple exige declarar toda API de "razão obrigatória" usada. O único
+         caso aqui é o @AppStorage/UserDefaults (espessura de caneta, modo
+         canhoto) — só o próprio app lê/escreve essas preferências, sem App
+         Group nem SDK de terceiros, por isso o motivo é CA92.1. -->
+    <key>NSPrivacyAccessedAPITypes</key>
+    <array>
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>CA92.1</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>

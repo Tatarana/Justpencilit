@@ -17,12 +17,17 @@ let package = Package(
             bundleIdentifier: "com.tatarana.justpencilit",
             teamIdentifier: "",
             displayVersion: "1.0",
-            bundleVersion: "1",
-            appIcon: .placeholder(icon: .pencil),
+            bundleVersion: "2",
+            appIcon: .asset("AppIcon"),
             accentColor: .presetColor(.blue),
             supportedDeviceFamilies: [.pad],
+            // A Apple exige as 4 orientações pra suportar multitarefa no
+            // iPad (Split View/Slide Over) — mesmo se o app travar a UI
+            // visualmente em portrait, o sistema precisa poder redimensionar
+            // a janela em qualquer uma delas.
             supportedInterfaceOrientations: [
                 .portrait,
+                .portraitUpsideDown,
                 .landscapeRight,
                 .landscapeLeft
             ],

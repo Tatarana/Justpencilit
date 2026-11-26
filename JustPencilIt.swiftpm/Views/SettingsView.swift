@@ -7,6 +7,8 @@ enum AppSettingsKeys {
     static let penStrokeWidth = "settings.penStrokeWidthMultiplier"
     static let markerStrokeWidth = "settings.markerStrokeWidthMultiplier"
     static let leftHandedMode = "settings.leftHandedMode"
+    static let defaultPaper = "settings.defaultPaper"
+    static let useSystemToolPicker = "settings.useSystemToolPicker"
 }
 
 /// Tela de ajustes do app — preferências de uso, não conteúdo dos cadernos,
@@ -25,6 +27,8 @@ struct SettingsView: View {
     @AppStorage(AppSettingsKeys.penStrokeWidth) private var penWidthMultiplier: Double = 1.0
     @AppStorage(AppSettingsKeys.markerStrokeWidth) private var markerWidthMultiplier: Double = 1.0
     @AppStorage(AppSettingsKeys.leftHandedMode) private var isLeftHanded: Bool = false
+    @AppStorage(AppSettingsKeys.defaultPaper) private var defaultPaper: PageBackground = .blank
+    @AppStorage(AppSettingsKeys.useSystemToolPicker) private var useSystemToolPicker: Bool = true
 
     @State private var securityChecks: [SecurityCheck]?
 
@@ -32,6 +36,8 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 leftHandedSection
+                paperSection
+                toolSection
                 securitySection
                 resetSection
             }
@@ -57,6 +63,33 @@ struct SettingsView: View {
             }
         } footer: {
             Text("Espelha a margem e os furos do papel pro lado direito da página, pra sua mão não ficar em cima deles ao escrever.")
+        }
+    }
+
+    private var paperSection: some View {
+        SwiftUI.Section {
+            Picker(selection: $defaultPaper) {
+                ForEach(PageBackground.allCases) { style in
+                    Text(style.label).tag(style)
+                }
+            } label: {
+                Label("Papel padrão", systemImage: "doc.plaintext")
+            }
+        } footer: {
+            Text("Tipo de papel dos cadernos novos. Cada caderno pode ter o seu próprio padrão (menu ••• dentro do caderno). Seções que já existem não mudam.")
+        }
+    }
+
+    private var toolSection: some View {
+        SwiftUI.Section {
+            Picker(selection: $useSystemToolPicker) {
+                Text("Padrão do iPad").tag(true)
+                Text("JustPencilIt (antiga)").tag(false)
+            } label: {
+                Label("Ferramenta de desenho", systemImage: "pencil.tip.crop.circle")
+            }
+        } footer: {
+            Text("A do iPad tem todas as canetas, laço e régua, e fica igual à de outros apps. A antiga continua disponível aqui caso prefira.")
         }
     }
 
@@ -98,6 +131,8 @@ struct SettingsView: View {
                 penWidthMultiplier = 1.0
                 markerWidthMultiplier = 1.0
                 isLeftHanded = false
+                defaultPaper = .blank
+                useSystemToolPicker = true
             }
         }
     }

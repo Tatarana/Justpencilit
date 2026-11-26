@@ -8,11 +8,10 @@ import UIKit
 /// não é uma captura da tela, então funciona pra qualquer página, mesmo uma
 /// que não esteja visível no momento.
 enum PDFExportService {
-    // Tamanho de página do PDF: A4 em pontos (72pt/polegada). O desenho de
-    // cada página é escalado mantendo a proporção ("aspect fit") e
-    // centralizado dentro dessa moldura, com uma margem em volta.
+    // Tamanho de página do PDF: A4 em pontos (72pt/polegada). Como a folha
+    // do app também é A4 (ver PageGeometry), cada página sai igualzinha ao
+    // que se vê na tela: mesma posição, papel e margem, só redimensionada.
     private static let pageSize = CGSize(width: 595, height: 842)
-    private static let margin: CGFloat = 28
 
     /// Exporta um conjunto de páginas, na ordem recebida — uma por página do
     /// PDF. Usado tanto pra uma seção/caderno inteiros quanto pra uma
@@ -34,8 +33,7 @@ enum PDFExportService {
         do {
             try renderer.writePDF(to: fileURL) { context in
                 for page in pages {
-                    context.beginPage()
-                    draw(page: page, in: pageBounds)
+                    draw(page: page, in: pageBounds, context: context)
                 }
             }
             // O UIGraphicsPDFRenderer escreve o arquivo sozinho — a
@@ -59,80 +57,61 @@ enum PDFExportService {
         return export(pages: pages, suggestedName: notebook.title)
     }
 
-    private static func draw(page: NotebookPage, in bounds: CGRect) {
-        // Fundo da página — mesmo estilo (liso/pautado/quadriculado) da
-        // seção a que ela pertence. `UIColor(patternImage:)` (usado pro
-        // pautado/quadriculado) preenche certinho via UIRectFill — é a
-        // mesma técnica que o próprio PageBackground usa pra desenhar as
-        // texturas dos padrões, então sabemos que funciona num contexto
-        // gráfico do UIKit como este.
+    /// Desenha uma página do caderno. A folha inteira (não só o recorte do
+    /// que foi escrito) é encaixada na largura do A4. Páginas antigas mais
+    /// compridas que um A4 viram várias páginas no PDF, em vez de encolher.
+    private static func draw(page: NotebookPage, in bounds: CGRect, context: UIGraphicsPDFRendererContext) {
         let background = page.section?.backgroundStyle ?? .blank
-        background.makeBackgroundColor().setFill()
-        UIRectFill(bounds)
-
-        // Linha de margem (estilo pautado escolar), quando o estilo tiver
-        // uma — mesma posição/cor usada ao vivo no canvas.
-        if let marginX = background.marginX {
-            UIColor.systemRed.withAlphaComponent(0.4).setFill()
-            UIRectFill(CGRect(x: marginX, y: 0, width: 1.5, height: bounds.height))
-        }
-
+        let isLeftHanded = UserDefaults.standard.bool(forKey: AppSettingsKeys.leftHandedMode)
         let drawing = DrawingStore.load(fileName: page.drawingFileName)
+        let paper = PageGeometry.size(fitting: drawing)
 
-        // Página em branco (nada desenhado ainda) — para por aqui, deixando
-        // só o papel/fundo no PDF, em vez de pular a folha inteira (o que
-        // bagunçaria a numeração das páginas seguintes).
-        guard !drawing.strokes.isEmpty else { return }
+        // Papel → PDF: encaixa a largura da folha na largura do A4.
+        let scale = bounds.width / paper.width
+        // Altura de folha que cabe numa página do PDF, em pontos de papel.
+        let sliceHeight = bounds.height / scale
+        let sliceCount = max(1, Int((paper.height / sliceHeight).rounded(.up)))
 
-        let sourceBounds = drawing.bounds.insetBy(dx: -20, dy: -20)
-        guard sourceBounds.width > 0, sourceBounds.height > 0 else { return }
+        for slice in 0..<sliceCount {
+            context.beginPage()
+            let sliceTop = CGFloat(slice) * sliceHeight
+            let sliceRect = CGRect(x: 0, y: sliceTop, width: paper.width, height: sliceHeight)
 
-        let contentRect = bounds.insetBy(dx: margin, dy: margin)
-        let fitScale = min(contentRect.width / sourceBounds.width, contentRect.height / sourceBounds.height)
-        guard fitScale.isFinite, fitScale > 0 else { return }
+            // Papel e margem, em coordenadas de papel (mesmas do canvas).
+            let cg = context.cgContext
+            cg.saveGState()
+            cg.scaleBy(x: scale, y: scale)
+            cg.translateBy(x: 0, y: -sliceTop)
+            background.makeBackgroundColor().setFill()
+            UIRectFill(sliceRect)
+            if let marginX = background.marginX {
+                let x = isLeftHanded ? paper.width - marginX : marginX
+                UIColor.systemRed.withAlphaComponent(0.4).setFill()
+                UIRectFill(CGRect(x: x, y: sliceTop, width: 1.5, height: sliceHeight))
+            }
+            cg.restoreGState()
 
-        // Renderiza numa resolução maior que o tamanho final no PDF (até um
-        // teto de 4x), pra sair nítido na impressão sem gerar uma imagem
-        // gigante à toa quando o desenho já é pequeno.
-        let renderScale = min(max(fitScale * 2, 1), 4)
+            // Página em branco: fica só o papel (não pula a folha, pra não
+            // bagunçar a numeração das seguintes).
+            guard !drawing.strokes.isEmpty else { continue }
 
-        // O PencilKit adapta a cor da tinta sozinho conforme o modo
-        // claro/escuro "atual" no momento da renderização (mesma causa do
-        // bug do "traço branco" que já resolvemos no canvas ao vivo,
-        // forçando `overrideUserInterfaceStyle = .light` na PKCanvasView).
-        // Só que `drawing.image(from:scale:)`, chamado aqui fora de
-        // qualquer view, não tem esse contexto — sem isso, a tinta sai
-        // esmaecida (resolvida como se estivesse em modo escuro). Força-se
-        // o modo claro só durante esta renderização.
-        var strokesImage = UIImage()
-        UITraitCollection(userInterfaceStyle: .light).performAsCurrent {
-            strokesImage = drawing.image(from: sourceBounds, scale: renderScale)
+            // O PencilKit adapta a cor da tinta ao modo claro/escuro "atual";
+            // fora de uma view isso pode esmaecer a tinta — força o claro.
+            var strokesImage = UIImage()
+            UITraitCollection(userInterfaceStyle: .light).performAsCurrent {
+                strokesImage = drawing.image(from: sliceRect, scale: 2)
+            }
+
+            // A imagem do PencilKit nem sempre é um bitmap "comum" e pode
+            // não aparecer desenhada direto no PDF — achata antes.
+            let format = UIGraphicsImageRendererFormat()
+            format.scale = strokesImage.scale
+            format.opaque = false
+            let flattenedImage = UIGraphicsImageRenderer(size: strokesImage.size, format: format).image { _ in
+                strokesImage.draw(at: .zero)
+            }
+            flattenedImage.draw(in: bounds)
         }
-
-        // A imagem que o PencilKit devolve aqui nem sempre é um bitmap
-        // "comum" por baixo dos panos — ela aparece certinho numa `Image`
-        // do SwiftUI (como na miniatura da grade), mas desenhada direto num
-        // contexto de PDF pode simplesmente não aparecer. "Achatamos" ela
-        // num bitmap garantido antes de colocar no PDF, o que resolve isso.
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = strokesImage.scale
-        format.opaque = false
-        let flattenedImage = UIGraphicsImageRenderer(size: strokesImage.size, format: format).image { _ in
-            strokesImage.draw(at: .zero)
-        }
-
-        // Alinhado ao topo da página (não centralizado verticalmente) —
-        // como em qualquer documento normal, o conteúdo começa colado na
-        // margem superior, e o espaço sobrando (quando o desenho não
-        // preenche a folha inteira) fica embaixo, não dos dois lados.
-        // Horizontalmente ainda centraliza, já que isso é normal pra uma
-        // página mais estreita que a folha.
-        let drawSize = CGSize(width: sourceBounds.width * fitScale, height: sourceBounds.height * fitScale)
-        let origin = CGPoint(
-            x: contentRect.minX + (contentRect.width - drawSize.width) / 2,
-            y: contentRect.minY
-        )
-        flattenedImage.draw(in: CGRect(origin: origin, size: drawSize))
     }
 
     /// Nome de arquivo seguro — troca qualquer caractere problemático (barra,

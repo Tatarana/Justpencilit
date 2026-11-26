@@ -135,9 +135,9 @@ struct AudioRecordingSheet: View {
         let title = "Ideia \(existingMemos.count + 1)"
         let memo = AudioMemo(
             title: title,
-            coverColor: NotebookColor.forOrder(existingMemos.count)
+            coverColor: NotebookColor.forOrder(existingMemos.count),
+            audioFileName: fileName
         )
-        memo.audioFileName = fileName
         memo.duration = duration
         memo.section = initialSection
         modelContext.insert(memo)

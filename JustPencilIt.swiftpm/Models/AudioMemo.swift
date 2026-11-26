@@ -35,12 +35,12 @@ final class AudioMemo: Identifiable {
     // fica salvo, só faz o memo aparecer também dentro daquele caderno.
     var section: Section?
 
-    init(title: String, coverColor: NotebookColor) {
+    init(title: String, coverColor: NotebookColor, audioFileName: String) {
         self.id = UUID()
         self.title = title
         self.createdAt = Date()
         self.duration = 0
-        self.audioFileName = "\(UUID().uuidString).m4a"
+        self.audioFileName = audioFileName
         self.coverColor = coverColor
     }
 

@@ -6,8 +6,16 @@ import SwiftUI
 /// etiqueta com o nome.
 struct AudioMemoCoverView: View {
     let memo: AudioMemo
+    /// Falso enquanto um memo protegido ainda não foi desbloqueado nesta
+    /// visita à fitoteca — some com título, duração e status de
+    /// transcrição, mostrando só a fita em si (sem nome) e o cadeado. Sem
+    /// isso, dava pra ler o título (e saber que aquele memo existe) sem
+    /// nunca ter passado pelo Face ID/senha — a mesma trava que já existia
+    /// pra ABRIR o memo, só que sem cobrir o que já aparecia na grade.
+    var isRevealed: Bool = true
 
     private var isProtected: Bool { memo.isProtected }
+    private var isLockedAndHidden: Bool { isProtected && !isRevealed }
 
     private var statusIcon: (name: String, color: Color)? {
         switch memo.transcriptionStatus {
@@ -38,14 +46,26 @@ struct AudioMemoCoverView: View {
                     )
                     .frame(height: 72)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(memo.title)
-                        .font(.custom(NotebookCoverView.titleFontName, size: 15))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    Text(formattedDuration)
-                        .font(.caption2.weight(.semibold))
+                Group {
+                    if isLockedAndHidden {
+                        HStack(spacing: 4) {
+                            Image(systemName: "lock.fill")
+                                .font(.caption2.weight(.bold))
+                            Text("Protegido")
+                                .font(.custom(NotebookCoverView.titleFontName, size: 15))
+                        }
                         .foregroundStyle(.secondary)
+                    } else {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(memo.title)
+                                .font(.custom(NotebookCoverView.titleFontName, size: 15))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                            Text(formattedDuration)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 10)
@@ -58,7 +78,7 @@ struct AudioMemoCoverView: View {
             .clipShape(RoundedRectangle(cornerRadius: 14))
             .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.black, lineWidth: 3))
 
-            if let statusIcon {
+            if let statusIcon, !isLockedAndHidden {
                 Image(systemName: statusIcon.name)
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(statusIcon.color)

@@ -36,6 +36,10 @@ struct NotebookPageCanvas: View {
     private static let maxUndoSlots = 20
 
     @State private var drawing = PKDrawing()
+    // Tamanho da folha desta página — A4, ou maior se for uma página antiga
+    // com desenho além disso. Calculado uma vez ao carregar, pra folha não
+    // mudar de tamanho enquanto se escreve.
+    @State private var pageSize = PageGeometry.a4
     @State private var undoStack: [PKDrawing] = []
     // Pilha espelhada do undoStack: cada Desfazer empilha aqui o desenho de
     // ANTES de desfazer, pra "Refazer" poder trazer de volta. Qualquer
@@ -92,6 +96,7 @@ struct NotebookPageCanvas: View {
                 penKind: penKind,
                 penColor: penColor,
                 canvasSize: cardSize,
+                pageSize: pageSize,
                 onDragChanged: onDragChanged,
                 onDragEnded: onDragEnded
             )
@@ -153,6 +158,7 @@ struct NotebookPageCanvas: View {
         // relatado e corrigido.
         isInternalDrawingUpdate = true
         drawing = DrawingStore.load(fileName: page.drawingFileName)
+        pageSize = PageGeometry.size(fitting: drawing)
         // A memória de desfazer/refazer é só desta visita à página — não
         // persiste em disco, então sai e volta zerada, como na maioria dos
         // apps de desenho.

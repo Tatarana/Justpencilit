@@ -8,5 +8,11 @@
     <string>Usado para gravar memos de áudio nos seus cadernos.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>Usado para transcrever seus memos de áudio em texto, no próprio aparelho.</string>
+    <!-- Só usamos a proteção de arquivos padrão do próprio iOS (Data
+         Protection), não uma criptografia própria/custom — isso conta como
+         isento pelas regras de exportação dos EUA, então já respondemos
+         "não" aqui pra não precisar confirmar manualmente a cada envio. -->
+    <key>ITSAppUsesNonExemptEncryption</key>
+    <false/>
 </dict>
 </plist>

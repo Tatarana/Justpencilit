@@ -7,6 +7,12 @@ enum PageBackground: String, Codable, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// Padrão geral escolhido nos Ajustes (mesma chave do @AppStorage).
+    static var appDefault: PageBackground {
+        let raw = UserDefaults.standard.string(forKey: "settings.defaultPaper") ?? ""
+        return PageBackground(rawValue: raw) ?? .blank
+    }
+
     var label: String {
         switch self {
         case .blank: return "Liso"

@@ -56,7 +56,10 @@ struct AudioLibraryView: View {
                                     Button {
                                         open(memo)
                                     } label: {
-                                        AudioMemoCoverView(memo: memo)
+                                        AudioMemoCoverView(
+                                            memo: memo,
+                                            isRevealed: !memo.isProtected || unlockedMemoIDs.contains(memo.id)
+                                        )
                                     }
                                     .buttonStyle(.plain)
                                 }

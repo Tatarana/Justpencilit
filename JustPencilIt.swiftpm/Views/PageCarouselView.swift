@@ -1,9 +1,8 @@
 import SwiftUI
 
-/// Navegação entre as páginas de uma seção. Duas formas de virar:
-/// arrastando a página de lado com o dedo (como um livro de verdade,
-/// acompanhando o dedo em tempo real) ou tocando nos botões ‹ › — que
-/// disparam a mesma animação de "dobra", só sem seguir o dedo.
+/// Navegação entre as páginas de uma seção, com a virada nativa do iOS
+/// (ver PageCurlView): puxar a borda da folha com o dedo, tocar na lateral,
+/// ou os botões ‹ ›.
 ///
 /// A caneta/cor e a navegação de página aparecem como cápsulas flutuantes
 /// sobre a página (em vez de barras fixas que tomam espaço permanente),
@@ -18,11 +17,11 @@ struct PageCarouselView: View {
     /// selecionar várias páginas e movê-las pra outra seção.
     var onShowGrid: () -> Void = {}
 
-    // Ângulo de "dobra" da página — atualizado ao vivo durante o arrasto,
-    // ou animado de 0 a 90 e de volta quando disparado pelos botões.
-    @State private var flipAngle: Double = 0
+    // Verdadeiro enquanto uma virada de página está acontecendo.
     @State private var isAnimating = false
     @State private var showChrome = true
+    // Com a paleta do iPad, a nossa PenToolbar some (ver CanvasView).
+    @AppStorage(AppSettingsKeys.useSystemToolPicker) private var useSystemToolPicker: Bool = true
 
     // Suavizar traços / desfazer — dois botões (ver `smoothControls`). Fica
     // aqui (e não em NotebookDetailView) porque é o próprio carrossel quem
@@ -40,66 +39,54 @@ struct PageCarouselView: View {
     }
 
     var body: some View {
-        GeometryReader { geometry in
+        Group {
             ZStack {
-                if pages.indices.contains(selectedPageIndex) {
-                    let page = pages[selectedPageIndex]
-                    NotebookPageCanvas(
-                        page: page,
-                        background: section.backgroundStyle,
-                        isActive: isActive && !isAnimating,
-                        penKind: penKind,
-                        penColor: penColor,
-                        onDragChanged: { translationX in
-                            handleDragChanged(translationX, width: geometry.size.width)
+                if !pages.isEmpty {
+                    PageCurlView(
+                        pageIDs: pages.map(\.id),
+                        selectedIndex: $selectedPageIndex,
+                        content: { pageID, isCurrent in
+                            pageView(pageID: pageID, isCurrent: isCurrent)
                         },
-                        onDragEnded: { translationX, velocityX in
-                            handleDragEnded(translationX, velocityX: velocityX, width: geometry.size.width)
-                        },
-                        smoothTrigger: smoothTrigger,
-                        undoTrigger: undoTrigger,
-                        redoTrigger: redoTrigger,
-                        undoCount: $undoCount,
-                        redoCount: $redoCount
+                        onTurningChange: { turning in
+                            isAnimating = turning
+                        }
                     )
-                    // Força a SwiftUI recriar a view (e seu @State de desenho)
-                    // ao trocar de página/seção — sem isso, a view era reaproveitada
-                    // na mesma posição da hierarquia e o desenho de uma página
-                    // "vazava" pra outra.
-                    .id(page.id)
-                    // Gira em torno da borda esquerda (onde fica a espiral) em
-                    // vez do centro — assim a página realmente "sai" de um
-                    // canto e só depois abre pra margem oposta, como uma
-                    // folha de caderno de espiral virando de verdade.
-                    .rotation3DEffect(
-                        .degrees(flipAngle),
-                        axis: (x: 0, y: 1, z: 0),
-                        anchor: .leading,
-                        perspective: 0.35
-                    )
-                    // A página "de perfil" (perto de 90°, bem na dobra) quase
-                    // não é visível numa folha real — esse esmaecimento no pico
-                    // do giro deixa a virada mais fluida e menos um corte abrupto.
-                    .opacity(1 - min(abs(flipAngle) / 90, 1) * 0.85)
                 }
 
                 if showChrome {
-                    VStack {
-                        HStack {
-                            Spacer()
-                            PenToolbar(kind: $penKind, color: $penColor)
-                        }
-                        Spacer()
-                        ZStack {
+                    if useSystemToolPicker {
+                        // A paleta do iPad fica embaixo e cobria a cápsula
+                        // de navegação e os botões da direita — com ela, os
+                        // dois sobem pro topo da folha.
+                        ZStack(alignment: .top) {
                             pageNavPill
-                            HStack {
+                            HStack(alignment: .top) {
                                 Spacer()
                                 smoothControls
                             }
                         }
+                        .frame(maxHeight: .infinity, alignment: .top)
+                        .padding(14)
+                        .transition(.opacity)
+                    } else {
+                        VStack {
+                            HStack {
+                                Spacer()
+                                PenToolbar(kind: $penKind, color: $penColor)
+                            }
+                            Spacer()
+                            ZStack {
+                                pageNavPill
+                                HStack {
+                                    Spacer()
+                                    smoothControls
+                                }
+                            }
+                        }
+                        .padding(14)
+                        .transition(.opacity)
                     }
-                    .padding(14)
-                    .transition(.opacity)
                 }
 
                 VStack {
@@ -114,7 +101,11 @@ struct PageCarouselView: View {
         }
         .onChange(of: section.id) { _, _ in
             selectedPageIndex = 0
-            flipAngle = 0
+        }
+        .onChange(of: selectedPageIndex) { _, _ in
+            // Desfazer/refazer é só da visita à página — folha nova começa zerada.
+            undoCount = 0
+            redoCount = 0
         }
         .onChange(of: pages.count) { _, newCount in
             if selectedPageIndex >= newCount {
@@ -124,10 +115,23 @@ struct PageCarouselView: View {
     }
 
     private var pageNavPill: some View {
-        HStack(spacing: 14) {
+        // Alvos de 44pt (mínimo recomendado pela Apple) — antes cada botão
+        // era só do tamanho do ícone, e um toque um pouco fora caía no papel.
+        HStack(spacing: 4) {
+            Button(action: goToFirst) {
+                Image(systemName: "backward.end.fill")
+                    .font(.body.weight(.semibold))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .disabled(selectedPageIndex <= 0)
+            .accessibilityLabel("Primeira página")
+
             Button(action: goToPrevious) {
                 Image(systemName: "chevron.left")
                     .font(.body.weight(.semibold))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .disabled(selectedPageIndex <= 0)
 
@@ -138,26 +142,43 @@ struct PageCarouselView: View {
             Button(action: goToNext) {
                 Image(systemName: "chevron.right")
                     .font(.body.weight(.semibold))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .disabled(selectedPageIndex >= pages.count - 1)
+
+            Button(action: goToLast) {
+                Image(systemName: "forward.end.fill")
+                    .font(.body.weight(.semibold))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .disabled(selectedPageIndex >= pages.count - 1)
+            .accessibilityLabel("Última página")
 
             Divider().frame(height: 16)
 
             Button(action: addPage) {
                 Image(systemName: "plus")
                     .font(.body.weight(.semibold))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
 
             Button(action: onShowGrid) {
                 Image(systemName: "square.grid.2x2")
                     .font(.body.weight(.semibold))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 8)
         .foregroundStyle(.primary)
         .background(.ultraThinMaterial, in: Capsule())
+        // Toque no meio da cápsula (entre botões) não vaza pro papel.
+        .contentShape(Capsule())
+        .onTapGesture {}
         .shadow(color: .black.opacity(0.25), radius: 6, x: 0, y: 3)
     }
 
@@ -244,6 +265,24 @@ struct PageCarouselView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(currentPage.isFavorite ? "Remover dos favoritos" : "Favoritar página")
+
+                // Marcador: o caderno passa a abrir direto nesta página.
+                // Só um por caderno — marcar outra página move o marcador.
+                if let notebook = section.notebook {
+                    let isBookmarked = notebook.bookmarkedPageID == currentPage.id
+                    Button {
+                        notebook.bookmarkedPageID = isBookmarked ? nil : currentPage.id
+                    } label: {
+                        Image(systemName: isBookmarked ? "bookmark.fill" : "bookmark")
+                            .font(.body.weight(.semibold))
+                            .frame(width: 34, height: 34)
+                            .foregroundStyle(isBookmarked ? Color.red : Color.primary)
+                            .background(.ultraThinMaterial, in: Circle())
+                            .shadow(color: .black.opacity(0.25), radius: 4, x: 0, y: 2)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(isBookmarked ? "Tirar marcador" : "Marcar esta página")
+                }
             }
         }
         .animation(.spring(response: 0.35, dampingFraction: 0.7), value: undoCount)
@@ -270,34 +309,25 @@ struct PageCarouselView: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: - Arrastar com o dedo
-
-    private func handleDragChanged(_ translationX: CGFloat, width: CGFloat) {
-        guard !isAnimating, width > 0 else { return }
-        // Arrastar pra esquerda pede a próxima página; pra direita, a anterior.
-        // Se não houver pra onde ir, nem acompanha o dedo (sem "elástico" por enquanto).
-        if translationX < 0 && selectedPageIndex >= pages.count - 1 { return }
-        if translationX > 0 && selectedPageIndex <= 0 { return }
-        let fraction = min(abs(translationX) / width, 1)
-        flipAngle = (translationX < 0 ? -1.0 : 1.0) * fraction * 90
-    }
-
-    private func handleDragEnded(_ translationX: CGFloat, velocityX: CGFloat, width: CGFloat) {
-        guard !isAnimating, width > 0, flipAngle != 0 else { return }
-        let fraction = abs(translationX) / width
-        let isFastFlick = abs(velocityX) > 600
-        let direction: Double = translationX < 0 ? 1 : -1
-
-        if fraction > 0.35 || isFastFlick {
-            completeFlip(direction: direction)
+    /// Folha de uma página. As vizinhas pré-carregadas pela virada recebem
+    /// contadores de desfazer "falsos" pra não zerarem os da folha atual.
+    @ViewBuilder
+    private func pageView(pageID: UUID, isCurrent: Bool) -> some View {
+        if let page = pages.first(where: { $0.id == pageID }) {
+            NotebookPageCanvas(
+                page: page,
+                background: section.backgroundStyle,
+                isActive: isCurrent && isActive && !isAnimating,
+                penKind: penKind,
+                penColor: penColor,
+                smoothTrigger: smoothTrigger,
+                undoTrigger: undoTrigger,
+                redoTrigger: redoTrigger,
+                undoCount: isCurrent ? $undoCount : .constant(0),
+                redoCount: isCurrent ? $redoCount : .constant(0)
+            )
         } else {
-            snapBack()
-        }
-    }
-
-    private func snapBack() {
-        withAnimation(.easeOut(duration: 0.22)) {
-            flipAngle = 0
+            Color.clear
         }
     }
 
@@ -305,34 +335,22 @@ struct PageCarouselView: View {
 
     private func goToPrevious() {
         guard selectedPageIndex > 0, !isAnimating else { return }
-        completeFlip(direction: -1)
+        selectedPageIndex -= 1
     }
 
     private func goToNext() {
         guard selectedPageIndex < pages.count - 1, !isAnimating else { return }
-        completeFlip(direction: 1)
+        selectedPageIndex += 1
     }
 
-    /// Termina a "dobra" da página no sentido dado: gira o resto do caminho
-    /// até 90° (ou parte de onde o arrasto parou), troca o conteúdo no ponto
-    /// de maior giro (onde ela fica de perfil, quase invisível), e gira a
-    /// nova página de volta pro lugar. Usa a variante de `withAnimation` com
-    /// `completion` pra garantir que a troca de conteúdo aconteça exatamente
-    /// quando a primeira metade termina, sem dessincronizar.
-    private func completeFlip(direction: Double) {
-        isAnimating = true
-        let newIndex = selectedPageIndex + Int(direction)
-        withAnimation(.easeIn(duration: 0.22)) {
-            flipAngle = -90 * direction
-        } completion: {
-            selectedPageIndex = newIndex
-            flipAngle = 90 * direction
-            withAnimation(.easeOut(duration: 0.28)) {
-                flipAngle = 0
-            } completion: {
-                isAnimating = false
-            }
-        }
+    private func goToFirst() {
+        guard selectedPageIndex > 0, !isAnimating else { return }
+        selectedPageIndex = 0
+    }
+
+    private func goToLast() {
+        guard selectedPageIndex < pages.count - 1, !isAnimating else { return }
+        selectedPageIndex = pages.count - 1
     }
 
     private func addPage() {

@@ -49,7 +49,11 @@ struct SectionTabsView: View {
     }
 
     private func addSection() {
-        let section = Section(title: "Seção \(notebook.sections.count + 1)", order: notebook.sections.count)
+        let section = Section(
+            title: "Seção \(notebook.sections.count + 1)",
+            order: notebook.sections.count,
+            backgroundStyle: notebook.effectiveDefaultBackground
+        )
         section.notebook = notebook
         notebook.sections.append(section)
         let firstPage = NotebookPage(order: 0)
