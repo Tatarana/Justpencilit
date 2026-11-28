@@ -156,6 +156,9 @@ final class RelaySync {
             switch error {
             case .unreachable:
                 return .offline
+            case .http(let status, _) where status == 429:
+                // Limite de pedidos do relay: só espera a próxima rodada.
+                return .offline
             case .http:
                 return .failed(error.isPairingRevoked
                     ? "O pareamento não vale mais no servidor. Desfaça e pareie o celular de novo."
