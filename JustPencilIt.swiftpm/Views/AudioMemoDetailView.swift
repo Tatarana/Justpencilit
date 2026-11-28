@@ -51,13 +51,19 @@ struct AudioMemoDetailView: View {
         .alert("Excluir \"\(memo.title)\"?", isPresented: $isDeleting) {
             Button("Cancelar", role: .cancel) {}
             Button("Excluir", role: .destructive) {
+                // Se veio do celular, o celular apaga a cópia dele também.
+                RelaySync.shared.recordDeletion(of: memo)
                 AudioStore.delete(fileName: memo.audioFileName)
                 modelContext.delete(memo)
+                try? modelContext.save()
+                Task { await RelaySync.shared.publishSnapshots(modelContext: modelContext) }
                 onDelete()
                 dismiss()
             }
         } message: {
-            Text("Isso apaga o áudio e a transcrição. Não dá pra desfazer.")
+            Text(memo.originDeviceID == nil
+                 ? "Isso apaga o áudio e a transcrição. Não dá pra desfazer."
+                 : "Isso apaga o áudio e a transcrição, aqui e no celular que gravou. Não dá pra desfazer.")
         }
     }
 
@@ -188,22 +194,8 @@ struct AudioMemoDetailView: View {
 
     private func retryTranscription() {
         isRetrying = true
-        memo.transcriptionStatus = .transcribing
-        Task {
-            let fileURL = AudioStore.url(for: memo.audioFileName)
-            do {
-                let text = try await SpeechTranscriptionService.transcribe(fileURL: fileURL)
-                await MainActor.run {
-                    memo.transcript = text
-                    memo.transcriptionStatus = .done
-                    isRetrying = false
-                }
-            } catch {
-                await MainActor.run {
-                    memo.transcriptionStatus = .failed
-                    isRetrying = false
-                }
-            }
+        MemoTranscription.start(memo, in: modelContext) {
+            isRetrying = false
         }
     }
 }

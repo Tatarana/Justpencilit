@@ -2,8 +2,8 @@ import SwiftUI
 import SwiftData
 import CoreImage.CIFilterBuiltins
 
-/// Ajustes → Celular: parear a Caderneta (Android), ver como está a
-/// sincronização e desfazer o pareamento.
+/// Ajustes → Celulares: parear um ou mais celulares com a Caderneta
+/// (Android), ver como está a sincronização de cada um e desparear.
 struct PhonePairingView: View {
     @Environment(\.modelContext) private var modelContext
     @AppStorage(AppSettingsKeys.relayURL) private var relayURL: String = ""
@@ -14,21 +14,19 @@ struct PhonePairingView: View {
     @State private var errorMessage: String?
     /// O código só aparece logo depois de parear, ou depois de Face ID.
     @State private var shownCode: RelayPairingCode?
-    @State private var confirmUnpair = false
+    @State private var unpairing: RelayPairing?
     @State private var unpairWarning: String?
 
     var body: some View {
         Form {
             if sync.isPaired {
-                pairedSection
+                phonesSection
                 syncSection
-                pairedActions
-            } else {
-                setupSection
             }
+            setupSection
             aboutSection
         }
-        .navigationTitle("Celular")
+        .navigationTitle("Celulares")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: Binding(
             get: { shownCode.map(IdentifiedCode.init) },
@@ -36,10 +34,16 @@ struct PhonePairingView: View {
         )) { identified in
             PairingCodeSheet(code: identified.code)
         }
-        .confirmationDialog("Desparear o celular?", isPresented: $confirmUnpair, titleVisibility: .visible) {
-            Button("Desparear", role: .destructive) { unpair() }
+        .confirmationDialog(
+            "Desparear \(unpairing?.displayName ?? "o celular")?",
+            isPresented: Binding(get: { unpairing != nil }, set: { if !$0 { unpairing = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Desparear", role: .destructive) {
+                if let unpairing { unpair(unpairing) }
+            }
         } message: {
-            Text("Apaga do servidor tudo que estava esperando para ir ou voltar. As fitas que já chegaram ficam aqui no iPad. Para voltar a sincronizar, é preciso ler um QR novo no celular.")
+            Text("Apaga do servidor tudo que estava esperando para ir ou voltar desse celular. As fitas que já chegaram ficam aqui no iPad. Para voltar a sincronizar, é preciso ler um QR novo nele.")
         }
         .alert("Pareamento desfeito", isPresented: Binding(
             get: { unpairWarning != nil },
@@ -51,7 +55,46 @@ struct PhonePairingView: View {
         }
     }
 
-    // MARK: Não pareado
+    // MARK: Celulares pareados
+
+    private var phonesSection: some View {
+        SwiftUI.Section {
+            ForEach(sync.pairings) { pairing in
+                PhoneRow(pairing: pairing, status: statusText(sync.status(of: pairing)))
+                    .swipeActions {
+                        Button("Desparear", role: .destructive) { unpairing = pairing }
+                        Button("QR") { showCodeAgain(for: pairing) }
+                    }
+                    .contextMenu {
+                        Button("Mostrar o QR de novo", systemImage: "qrcode") { showCodeAgain(for: pairing) }
+                        Button("Desparear", systemImage: "xmark.circle", role: .destructive) { unpairing = pairing }
+                    }
+            }
+        } header: {
+            Text("Caderneta")
+        } footer: {
+            Text("Toque e segure (ou deslize) um celular para mostrar o QR de novo ou desparear.")
+        }
+    }
+
+    private var syncSection: some View {
+        SwiftUI.Section {
+            Button {
+                Task { await sync.syncNow(modelContext: modelContext) }
+            } label: {
+                HStack {
+                    Text(sync.isRunning ? "Sincronizando…" : "Sincronizar agora")
+                    Spacer()
+                    if sync.isRunning { ProgressView() }
+                }
+            }
+            .disabled(sync.isRunning)
+        } footer: {
+            Text("Enquanto o app está aberto, sincroniza sozinho a cada minuto: as fitas dos celulares chegam e são transcritas aqui, e a transcrição volta pra lá.")
+        }
+    }
+
+    // MARK: Parear
 
     private var setupSection: some View {
         SwiftUI.Section {
@@ -69,7 +112,7 @@ struct PhonePairingView: View {
                         Text("Criando a caixa no servidor…")
                     }
                 } else {
-                    Label("Parear um celular", systemImage: "qrcode")
+                    Label(sync.isPaired ? "Parear outro celular" : "Parear um celular", systemImage: "qrcode")
                 }
             }
             .disabled(isWorking || relayURL.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -80,45 +123,7 @@ struct PhonePairingView: View {
         } header: {
             Text("Servidor de sincronização")
         } footer: {
-            Text("O endereço onde você publicou o justpencilit-relay na Cloudflare. Depois de parear, aparece um QR para ler na Caderneta.")
-        }
-    }
-
-    // MARK: Pareado
-
-    private var pairedSection: some View {
-        SwiftUI.Section {
-            LabeledContent("Celular", value: sync.phoneName ?? "Aguardando o primeiro envio")
-            if let pairing = sync.pairing {
-                LabeledContent("Pareado em", value: pairing.pairedAt.formatted(date: .abbreviated, time: .shortened))
-                LabeledContent("Servidor", value: URL(string: pairing.relayURL)?.host ?? pairing.relayURL)
-            }
-        } header: {
-            Text("Caderneta")
-        }
-    }
-
-    private var syncSection: some View {
-        SwiftUI.Section {
-            HStack {
-                Text(statusText)
-                Spacer()
-                if sync.status == .running { ProgressView() }
-            }
-            Button("Sincronizar agora") {
-                Task { await sync.syncNow(modelContext: modelContext) }
-            }
-            .disabled(sync.status == .running)
-        } footer: {
-            Text("Enquanto o app está aberto, sincroniza sozinho a cada minuto: as fitas do celular chegam e são transcritas aqui, e a transcrição volta pra lá.")
-        }
-    }
-
-    private var pairedActions: some View {
-        SwiftUI.Section {
-            Button("Mostrar o QR de novo") { showCodeAgain() }
-            Button("Desparear", role: .destructive) { confirmUnpair = true }
-                .disabled(isWorking)
+            Text("O endereço onde você publicou o justpencilit-relay na Cloudflare. Cada celular ganha a própria caixa e a própria chave.")
         }
     }
 
@@ -126,12 +131,12 @@ struct PhonePairingView: View {
         SwiftUI.Section {
             EmptyView()
         } footer: {
-            Text("Tudo passa cifrado de ponta a ponta: a chave fica só neste iPad e no celular, e o servidor guarda e repassa sem conseguir ler nada. Cadernos protegidos não vão pro celular.")
+            Text("Tudo passa cifrado de ponta a ponta: as chaves ficam só neste iPad e nos celulares, e o servidor guarda e repassa sem conseguir ler nada. Cadernos protegidos não vão pros celulares.")
         }
     }
 
-    private var statusText: String {
-        switch sync.status {
+    private func statusText(_ status: RelaySync.Status) -> String {
+        switch status {
         case .idle:
             return "Pronto"
         case .running:
@@ -140,7 +145,7 @@ struct PhonePairingView: View {
             return "Sem conexão agora. Tenta de novo em instantes."
         case let .done(at, imported):
             let time = at.formatted(date: .omitted, time: .shortened)
-            return imported > 0 ? "Às \(time): \(imported) fita(s) nova(s) do celular." : "Sincronizado às \(time)."
+            return imported > 0 ? "Às \(time): \(imported) fita(s) nova(s)." : "Sincronizado às \(time)."
         case let .failed(message):
             return message
         }
@@ -169,23 +174,41 @@ struct PhonePairingView: View {
     }
 
     /// O QR é a chave: mostrar de novo pede Face ID/senha, como um caderno protegido.
-    private func showCodeAgain() {
+    private func showCodeAgain(for pairing: RelayPairing) {
         Task {
-            guard let pairing = sync.pairing else { return }
             if await BiometricLock.authenticate(reason: "Mostrar o código de pareamento do celular") {
                 shownCode = pairing.code
             }
         }
     }
 
-    private func unpair() {
+    private func unpair(_ pairing: RelayPairing) {
         isWorking = true
         Task {
-            let deletedOnServer = await sync.unpair()
+            let deletedOnServer = await sync.unpair(pairing)
             isWorking = false
             if !deletedOnServer {
-                unpairWarning = "O celular foi esquecido aqui, mas não deu pra apagar a caixa no servidor (sem conexão). Ela fica inacessível sem a chave."
+                unpairWarning = "O celular foi esquecido aqui, mas não deu pra apagar a caixa no servidor (sem conexão). Ela fica inacessível sem a chave, e o servidor a apaga sozinho depois de 180 dias parada."
             }
+        }
+    }
+}
+
+/// Uma linha da lista de celulares. Separada para o compilador do
+/// Playgrounds não se perder num `ForEach` grande.
+private struct PhoneRow: View {
+    let pairing: RelayPairing
+    let status: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(pairing.displayName).font(.headline)
+            Text(status)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Text("Pareado em \(pairing.pairedAt.formatted(date: .abbreviated, time: .shortened)) · \(URL(string: pairing.relayURL)?.host ?? pairing.relayURL)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }
@@ -221,7 +244,6 @@ private struct PairingCodeSheet: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-
             }
             .padding(32)
             .toolbar {

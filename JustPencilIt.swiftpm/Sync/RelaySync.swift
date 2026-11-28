@@ -20,10 +20,12 @@ enum SyncSetupError: Error, LocalizedError {
 
 /// Sincronização com a Caderneta (Android) pelo relay na Cloudflare.
 ///
-/// O iPad continua sendo a central: ele **importa** as fitas que o celular
-/// deixou na caixa de entrada (`inbox/`), transcreve, e **publica** uma cópia
-/// de leitura (`snapshot/manifest`) com as seções e as transcrições. Tudo
-/// sobe e desce cifrado (`RelayCrypto`); o servidor não lê nada.
+/// O iPad continua sendo a central: para cada celular pareado, ele
+/// **importa** o que o celular deixou na caixa de entrada (`inbox/`: fitas
+/// novas, edições e exclusões), transcreve, e **publica** uma cópia de
+/// leitura (`snapshot/manifest`) com as seções, as transcrições e as fitas
+/// apagadas aqui. Tudo sobe e desce cifrado (`RelayCrypto`); o servidor não
+/// lê nada.
 ///
 /// Protocolo: docs/SYNC_PROTOCOL.md no repo justpencilit-android e
 /// docs/PROTOCOL.md no repo justpencilit-relay.
@@ -41,23 +43,26 @@ final class RelaySync {
         case failed(String)
     }
 
-    private(set) var status: Status = .idle
-    private(set) var pairing: RelayPairing? = PairingStore.load()
-    /// Nome do celular, como ele mesmo se apresenta nos pacotes.
-    private(set) var phoneName: String? = UserDefaults.standard.string(forKey: Defaults.phoneName)
+    private(set) var pairings: [RelayPairing] = PairingStore.load()
+    /// Como terminou a última rodada de cada celular, pela caixa.
+    private(set) var statusByMailbox: [String: Status] = [:]
+    private(set) var isRunning = false
 
-    var isPaired: Bool { pairing != nil }
+    var isPaired: Bool { !pairings.isEmpty }
 
-    private enum Defaults {
-        static let lastSnapshotHash = "sync.lastSnapshotHash"
-        static let phoneName = "sync.phoneName"
+    func status(of pairing: RelayPairing) -> Status {
+        isRunning ? .running : (statusByMailbox[pairing.mailboxID] ?? .idle)
     }
 
     private static let snapshotKey = "snapshot/manifest"
+    private static let deviceInfoKey = "device/info"
+    /// Fitas apagadas aqui são avisadas ao celular por este tempo. Um celular
+    /// parado mais que isso pode ficar com uma cópia velha — ele mesmo apaga.
+    private static let tombstoneLifetime: TimeInterval = 90 * 24 * 60 * 60
 
     // MARK: - Pareamento
 
-    /// Cria uma caixa nova no relay e devolve o código para o QR.
+    /// Cria uma caixa nova no relay para mais um celular e devolve o código do QR.
     func pair(relayURL raw: String) async throws -> RelayPairingCode {
         guard RelayCrypto.selfTest() else { throw SyncSetupError.cryptoSelfTestFailed }
 
@@ -76,76 +81,127 @@ final class RelaySync {
         )
         guard let client = newPairing.client else { throw SyncSetupError.invalidURL }
         try await client.register()
-        try PairingStore.save(newPairing)
 
-        pairing = newPairing
-        UserDefaults.standard.removeObject(forKey: Defaults.lastSnapshotHash)
-        setPhoneName(nil)
-        status = .idle
+        var updated = pairings
+        updated.append(newPairing)
+        try PairingStore.save(updated)
+        pairings = updated
         return code
     }
 
-    /// Apaga a caixa no relay e esquece o celular. Devolve `false` se não deu
-    /// pra apagar no servidor (sem internet) — o pareamento local some mesmo
-    /// assim, e a caixa órfã fica inacessível sem a chave.
-    func unpair() async -> Bool {
-        guard let pairing else { return true }
+    /// Apaga a caixa desse celular no relay e esquece ele. Devolve `false` se
+    /// não deu pra apagar no servidor (sem internet) — o pareamento local some
+    /// mesmo assim, e a caixa órfã fica inacessível sem a chave (e o relay
+    /// apaga caixas paradas há 180 dias).
+    func unpair(_ pairing: RelayPairing) async -> Bool {
         var deletedOnServer = true
         do {
             try await pairing.client?.deleteMailbox()
         } catch {
             deletedOnServer = false
         }
-        PairingStore.clear()
-        self.pairing = nil
-        UserDefaults.standard.removeObject(forKey: Defaults.lastSnapshotHash)
-        setPhoneName(nil)
-        status = .idle
+        let remaining = pairings.filter { $0.mailboxID != pairing.mailboxID }
+        try? PairingStore.save(remaining)
+        pairings = remaining
+        statusByMailbox[pairing.mailboxID] = nil
+        UserDefaults.standard.removeObject(forKey: Self.snapshotHashKey(pairing.mailboxID))
+        if let deviceID = pairing.deviceID { Tombstones.clear(deviceID: deviceID) }
         return deletedOnServer
     }
 
     // MARK: - Sincronização
 
-    /// Uma rodada: importa a caixa de entrada e publica o snapshot se mudou.
-    /// Barato quando não há nada novo (uma listagem e nenhum envio).
+    /// Uma rodada com cada celular: importa a caixa de entrada e publica o
+    /// snapshot se mudou. Barato quando não há nada novo (uma listagem e
+    /// nenhum envio por celular).
     func syncNow(modelContext: ModelContext) async {
-        guard let pairing, let client = pairing.client, status != .running else { return }
-        status = .running
-        let key = pairing.keys.encKey
+        guard !isRunning, !pairings.isEmpty else { return }
+        isRunning = true
+        defer { isRunning = false }
+
+        for pairing in pairings {
+            statusByMailbox[pairing.mailboxID] = await syncOne(pairing, modelContext: modelContext)
+        }
+    }
+
+    /// Republica o snapshot de todos os celulares sem mexer no status — usado
+    /// quando uma transcrição termina ou uma fita é apagada aqui.
+    func publishSnapshots(modelContext: ModelContext) async {
+        for pairing in pairings {
+            guard let client = pairing.client else { continue }
+            try? await publishSnapshot(for: pairing, client: client, modelContext: modelContext)
+        }
+    }
+
+    /// Chamado ANTES de apagar um memo aqui: se ele veio de um celular, o
+    /// celular fica sabendo pelo próximo snapshot e apaga a cópia dele.
+    func recordDeletion(of memo: AudioMemo) {
+        guard let deviceID = memo.originDeviceID else { return }
+        Tombstones.add(memoID: memo.id.uuidString, deviceID: deviceID)
+    }
+
+    private func syncOne(_ pairing: RelayPairing, modelContext: ModelContext) async -> Status {
+        guard let client = pairing.client else { return .failed("Endereço do servidor inválido.") }
         do {
-            let imported = try await importInbox(client: client, key: key, modelContext: modelContext)
-            try await publishSnapshot(client: client, key: key, modelContext: modelContext)
-            status = .done(at: Date(), imported: imported)
+            var current = pairing
+            try await learnDevice(&current, client: client)
+            let result = try await importInbox(&current, client: client, modelContext: modelContext)
+            saveIfChanged(current, original: pairing)
+            if let newerVersion = result.newerVersionSeen {
+                return .failed("A Caderneta deste celular está numa versão mais nova (protocolo \(newerVersion)). Atualize o JustPencilIt.")
+            }
+            try await publishSnapshot(for: current, client: client, modelContext: modelContext)
+            return .done(at: Date(), imported: result.imported)
         } catch let error as RelayError {
             switch error {
             case .unreachable:
-                status = .offline
+                return .offline
             case .http:
-                status = .failed(error.isPairingRevoked
+                return .failed(error.isPairingRevoked
                     ? "O pareamento não vale mais no servidor. Desfaça e pareie o celular de novo."
                     : (error.errorDescription ?? "Erro no servidor."))
             }
         } catch {
-            status = .failed(error.localizedDescription)
+            return .failed(error.localizedDescription)
         }
     }
 
-    /// Publica o snapshot sem mexer no status — usado quando uma transcrição
-    /// termina, para o texto chegar ao celular sem esperar a próxima rodada.
-    private func publishQuietly(modelContext: ModelContext) async {
-        guard let pairing, let client = pairing.client else { return }
-        try? await publishSnapshot(client: client, key: pairing.keys.encKey, modelContext: modelContext)
+    /// O celular se apresenta em `device/info` logo depois de parear: assim o
+    /// iPad sabe o nome e o id dele antes mesmo da primeira fita.
+    private func learnDevice(_ pairing: inout RelayPairing, client: RelayClient) async throws {
+        guard pairing.deviceID == nil,
+              let blob = try await client.get(Self.deviceInfoKey),
+              let plain = try? RelayCrypto.open(blob, key: pairing.keys.encKey, objectKey: Self.deviceInfoKey),
+              let info = try? JSONDecoder().decode(DeviceInfoDTO.self, from: plain)
+        else { return }
+        pairing.deviceID = info.deviceId
+        pairing.phoneName = info.deviceName
+    }
+
+    private func saveIfChanged(_ pairing: RelayPairing, original: RelayPairing) {
+        guard pairing.deviceID != original.deviceID || pairing.phoneName != original.phoneName,
+              let index = pairings.firstIndex(where: { $0.mailboxID == pairing.mailboxID })
+        else { return }
+        var updated = pairings
+        updated[index] = pairing
+        if (try? PairingStore.save(updated)) != nil { pairings = updated }
     }
 
     // MARK: Caixa de entrada (celular → iPad)
 
-    private func importInbox(client: RelayClient, key: SymmetricKey, modelContext: ModelContext) async throws -> Int {
+    private struct ImportResult {
+        var imported = 0
+        var newerVersionSeen: Int?
+    }
+
+    private func importInbox(_ pairing: inout RelayPairing, client: RelayClient, modelContext: ModelContext) async throws -> ImportResult {
+        let key = pairing.keys.encKey
         let objects = try await client.list(prefix: "inbox/")
         let existingKeys = Set(objects.map(\.key))
         // Em ordem de edição: a fita nova chega antes das renomeações dela.
         let entries = objects.compactMap { InboxEntry(key: $0.key) }.sorted { $0.updatedAt < $1.updatedAt }
 
-        var imported = 0
+        var result = ImportResult()
         var newMemos: [AudioMemo] = []
         // Fitas cujo áudio ainda não chegou: as edições seguintes delas
         // esperam também, para não serem aplicadas antes da fita existir.
@@ -155,23 +211,36 @@ final class RelaySync {
             if blockedMemoIDs.contains(entry.memoID) { continue }
             guard let blob = try await client.get(entry.key) else { continue }
             guard let plain = try? RelayCrypto.open(blob, key: key, objectKey: entry.key),
-                  let manifest = try? JSONDecoder().decode(InboxManifest.self, from: plain),
-                  manifest.protocolVersion <= SyncProtocol.version
+                  let manifest = try? JSONDecoder().decode(InboxManifest.self, from: plain)
             else {
-                // Pacote estragado, adulterado ou de uma versão mais nova do
-                // app: fica lá, sem travar o resto.
+                // Pacote estragado ou adulterado: fica lá, sem travar o resto.
                 continue
             }
-            if !manifest.deviceName.isEmpty { setPhoneName(manifest.deviceName) }
+            guard manifest.protocolVersion <= SyncProtocol.version else {
+                // De uma Caderneta mais nova: não dá pra ler com segurança.
+                // Fica guardado até este app ser atualizado.
+                result.newerVersionSeen = manifest.protocolVersion
+                blockedMemoIDs.insert(entry.memoID)
+                continue
+            }
+            pairing.deviceID = manifest.deviceId
+            if !manifest.deviceName.isEmpty { pairing.phoneName = manifest.deviceName }
 
             var complete = true
-            var audioKeysToDelete: [String] = []
+            var keysToDelete: [String] = [entry.key]
 
             for item in manifest.items where item.kind == SyncProtocol.kindAudioMemo {
                 guard let memoID = UUID(uuidString: item.id) else { continue }
                 let audioKey = "inbox/\(item.id).m4a"
 
-                if item.isNew {
+                if item.isDeleted == true {
+                    // Apagada no celular: apaga aqui também.
+                    if let memo = findMemo(memoID, in: modelContext) {
+                        AudioStore.delete(fileName: memo.audioFileName)
+                        modelContext.delete(memo)
+                    }
+                    if existingKeys.contains(audioKey) { keysToDelete.append(audioKey) }
+                } else if item.isNew {
                     if findMemo(memoID, in: modelContext) == nil {
                         // O celular sobe o áudio antes do .json, mas se a
                         // conexão dele caiu no meio, o áudio pode faltar.
@@ -185,34 +254,33 @@ final class RelaySync {
                         }
                         let memo = try makeMemo(from: item, id: memoID, deviceID: manifest.deviceId, audio: audio, in: modelContext)
                         newMemos.append(memo)
-                        imported += 1
+                        result.imported += 1
                     }
                     // Já importada antes (a conexão caiu depois de salvar):
                     // não duplica, só limpa.
-                    if existingKeys.contains(audioKey) { audioKeysToDelete.append(audioKey) }
+                    if existingKeys.contains(audioKey) { keysToDelete.append(audioKey) }
                 } else if let memo = findMemo(memoID, in: modelContext) {
                     memo.title = item.title
                     memo.section = item.sectionId
                         .flatMap { UUID(uuidString: $0) }
                         .flatMap { findSection($0, in: modelContext) }
                 }
-                // isNew = false de uma fita que não existe mais aqui (apagada
-                // no iPad): não há o que atualizar, só limpar.
+                // Edição de uma fita que não existe mais aqui (apagada no
+                // iPad): não há o que atualizar, só limpar.
             }
 
             guard complete else { continue }
             try modelContext.save()
             // Só apaga do servidor depois de salvar aqui.
-            try await client.delete(entry.key)
-            for audioKey in audioKeysToDelete {
-                try await client.delete(audioKey)
+            for objectKey in keysToDelete {
+                try await client.delete(objectKey)
             }
         }
 
         for memo in newMemos {
-            transcribe(memo, modelContext: modelContext)
+            MemoTranscription.start(memo, in: modelContext)
         }
-        return imported
+        return result
     }
 
     private func makeMemo(from item: InboxItemDTO, id: UUID, deviceID: String, audio: Data, in modelContext: ModelContext) throws -> AudioMemo {
@@ -236,38 +304,20 @@ final class RelaySync {
         return memo
     }
 
-    private func transcribe(_ memo: AudioMemo, modelContext: ModelContext) {
-        let memoID = memo.id
-        let fileURL = AudioStore.url(for: memo.audioFileName)
-        memo.transcriptionStatus = .transcribing
-        Task { @MainActor in
-            var text: String?
-            do {
-                text = try await SpeechTranscriptionService.transcribe(fileURL: fileURL)
-            } catch {
-                text = nil
-            }
-            guard let memo = self.findMemo(memoID, in: modelContext) else { return }
-            if let text {
-                memo.transcript = text
-                memo.transcriptionStatus = .done
-            } else {
-                memo.transcriptionStatus = .failed
-            }
-            try? modelContext.save()
-            await self.publishQuietly(modelContext: modelContext)
-        }
-    }
-
     // MARK: Snapshot (iPad → celular)
 
     private struct SnapshotBody: Encodable {
         let sections: [SectionDTO]
         let memoUpdates: [MemoUpdateDTO]
+        let deletedMemoIds: [String]
     }
 
-    private func publishSnapshot(client: RelayClient, key: SymmetricKey, modelContext: ModelContext) async throws {
-        let body = try snapshotBody(modelContext)
+    private static func snapshotHashKey(_ mailboxID: String) -> String {
+        "sync.\(mailboxID).lastSnapshotHash"
+    }
+
+    private func publishSnapshot(for pairing: RelayPairing, client: RelayClient, modelContext: ModelContext) async throws {
+        let body = try snapshotBody(for: pairing, modelContext)
 
         // Só sobe quando o conteúdo mudou — a rodada periódica quase sempre
         // termina aqui, sem gastar rede.
@@ -275,21 +325,23 @@ final class RelaySync {
         canonical.outputFormatting = [.sortedKeys]
         let canonicalData = try canonical.encode(body)
         let hash = Data(SHA256.hash(data: canonicalData)).hexString
-        guard hash != UserDefaults.standard.string(forKey: Defaults.lastSnapshotHash) else { return }
+        let hashKey = Self.snapshotHashKey(pairing.mailboxID)
+        guard hash != UserDefaults.standard.string(forKey: hashKey) else { return }
 
         let snapshot = SnapshotDTO(
             protocolVersion: SyncProtocol.version,
             generatedAt: Date().millisecondsSince1970,
             sections: body.sections,
-            memoUpdates: body.memoUpdates
+            memoUpdates: body.memoUpdates,
+            deletedMemoIds: body.deletedMemoIds
         )
         let json = try JSONEncoder().encode(snapshot)
-        let sealed = try RelayCrypto.seal(json, key: key, objectKey: Self.snapshotKey)
+        let sealed = try RelayCrypto.seal(json, key: pairing.keys.encKey, objectKey: Self.snapshotKey)
         try await client.put(Self.snapshotKey, data: sealed)
-        UserDefaults.standard.set(hash, forKey: Defaults.lastSnapshotHash)
+        UserDefaults.standard.set(hash, forKey: hashKey)
     }
 
-    private func snapshotBody(_ modelContext: ModelContext) throws -> SnapshotBody {
+    private func snapshotBody(for pairing: RelayPairing, _ modelContext: ModelContext) throws -> SnapshotBody {
         let notebooks = try modelContext.fetch(FetchDescriptor<Notebook>(sortBy: [SortDescriptor(\.createdAt)]))
         var sections: [SectionDTO] = []
         // Cadernos protegidos (e os de coleções protegidas) não saem do iPad.
@@ -306,8 +358,12 @@ final class RelaySync {
             }
         }
 
+        // Só as fitas que vieram DESTE celular.
+        guard let deviceID = pairing.deviceID else {
+            return SnapshotBody(sections: sections, memoUpdates: [], deletedMemoIds: [])
+        }
         let memos = try modelContext.fetch(FetchDescriptor<AudioMemo>(sortBy: [SortDescriptor(\.createdAt)]))
-        let updates = memos.filter { $0.originDeviceID != nil }.map { memo in
+        let updates = memos.filter { $0.originDeviceID == deviceID }.map { memo in
             // Fita etiquetada num caderno protegido: o celular sabe que ela
             // chegou, mas o texto não volta.
             MemoUpdateDTO(
@@ -317,19 +373,11 @@ final class RelaySync {
                 transcriptionStatus: memo.transcriptionStatusRaw
             )
         }
-        return SnapshotBody(sections: sections, memoUpdates: updates)
+        let deleted = Tombstones.memoIDs(deviceID: deviceID, maxAge: Self.tombstoneLifetime)
+        return SnapshotBody(sections: sections, memoUpdates: updates, deletedMemoIds: deleted)
     }
 
     // MARK: Utilidades
-
-    private func setPhoneName(_ name: String?) {
-        phoneName = name
-        if let name {
-            UserDefaults.standard.set(name, forKey: Defaults.phoneName)
-        } else {
-            UserDefaults.standard.removeObject(forKey: Defaults.phoneName)
-        }
-    }
 
     private func findMemo(_ id: UUID, in modelContext: ModelContext) -> AudioMemo? {
         var descriptor = FetchDescriptor<AudioMemo>(predicate: #Predicate { $0.id == id })
@@ -341,6 +389,42 @@ final class RelaySync {
         var descriptor = FetchDescriptor<Section>(predicate: #Predicate { $0.id == id })
         descriptor.fetchLimit = 1
         return try? modelContext.fetch(descriptor).first
+    }
+}
+
+/// Fitas vindas de um celular e apagadas aqui, para avisar o celular.
+/// Ficam no UserDefaults: são só ids, sem conteúdo.
+private enum Tombstones {
+    private static let key = "sync.tombstones"
+
+    /// deviceID → (memoID → quando foi apagada, em segundos desde 1970)
+    private static var all: [String: [String: Double]] {
+        get { UserDefaults.standard.dictionary(forKey: key) as? [String: [String: Double]] ?? [:] }
+        set { UserDefaults.standard.set(newValue, forKey: key) }
+    }
+
+    static func add(memoID: String, deviceID: String) {
+        var current = all
+        current[deviceID, default: [:]][memoID] = Date().timeIntervalSince1970
+        all = current
+    }
+
+    /// As ainda válidas, em ordem estável; as vencidas são descartadas.
+    static func memoIDs(deviceID: String, maxAge: TimeInterval) -> [String] {
+        var current = all
+        let cutoff = Date().timeIntervalSince1970 - maxAge
+        let alive = (current[deviceID] ?? [:]).filter { $0.value >= cutoff }
+        if alive.count != current[deviceID]?.count {
+            current[deviceID] = alive.isEmpty ? nil : alive
+            all = current
+        }
+        return alive.keys.sorted()
+    }
+
+    static func clear(deviceID: String) {
+        var current = all
+        current[deviceID] = nil
+        all = current
     }
 }
 

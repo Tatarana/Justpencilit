@@ -148,30 +148,7 @@ struct AudioRecordingSheet: View {
     }
 
     private func transcribe(_ memo: AudioMemo) {
-        let memoID = memo.id
-        memo.transcriptionStatus = .transcribing
-        Task {
-            let fileURL = AudioStore.url(for: memo.audioFileName)
-            do {
-                let text = try await SpeechTranscriptionService.transcribe(fileURL: fileURL)
-                await MainActor.run {
-                    guard let memo = findMemo(memoID) else { return }
-                    memo.transcript = text
-                    memo.transcriptionStatus = .done
-                }
-            } catch {
-                await MainActor.run {
-                    guard let memo = findMemo(memoID) else { return }
-                    memo.transcriptionStatus = .failed
-                }
-            }
-        }
-    }
-
-    private func findMemo(_ id: UUID) -> AudioMemo? {
-        var descriptor = FetchDescriptor<AudioMemo>(predicate: #Predicate { $0.id == id })
-        descriptor.fetchLimit = 1
-        return try? modelContext.fetch(descriptor).first
+        MemoTranscription.start(memo, in: modelContext)
     }
 }
 

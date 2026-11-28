@@ -100,7 +100,7 @@ struct SettingsView: View {
             NavigationLink {
                 PhonePairingView()
             } label: {
-                Label("Celular (Caderneta)", systemImage: "iphone.gen3")
+                Label("Celulares (Caderneta)", systemImage: "iphone.gen3")
             }
         } footer: {
             Text("Pareie a Caderneta no seu Android: as ideias gravadas no celular chegam aqui e são transcritas, de qualquer lugar com internet.")
