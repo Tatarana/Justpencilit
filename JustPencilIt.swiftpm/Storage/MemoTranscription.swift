@@ -16,13 +16,18 @@ enum MemoTranscription {
     /// sucesso ou falha.
     static func start(_ memo: AudioMemo, in modelContext: ModelContext, onFinish: (() -> Void)? = nil) {
         let memoID = memo.id
-        guard !running.contains(memoID) else { return }
-        running.insert(memoID)
+        // Já transcrevendo: não começa outra; quem esperava o fim é avisado já.
+        guard !MemoTranscription.running.contains(memoID) else {
+            onFinish?()
+            return
+        }
+        MemoTranscription.running.insert(memoID)
         let fileURL = AudioStore.url(for: memo.audioFileName)
         memo.transcriptionStatus = .transcribing
 
         Task { @MainActor in
-            defer { running.remove(memoID) }
+            // Nomes qualificados: dentro do closure, nada de `self` implícito.
+            defer { MemoTranscription.running.remove(memoID) }
             var text: String?
             do {
                 text = try await SpeechTranscriptionService.transcribe(fileURL: fileURL)
@@ -30,7 +35,7 @@ enum MemoTranscription {
                 text = nil
             }
 
-            if let memo = find(memoID, in: modelContext) {
+            if let memo = MemoTranscription.find(memoID, in: modelContext) {
                 if let text {
                     memo.transcript = text
                     memo.transcriptionStatus = .done

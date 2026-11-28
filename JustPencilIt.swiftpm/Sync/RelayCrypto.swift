@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import Security // SecRandomCopyBytes
 
 /// Cifra de ponta a ponta da sincronização com a Caderneta (Android).
 ///
