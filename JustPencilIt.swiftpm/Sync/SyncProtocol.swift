@@ -11,6 +11,9 @@ enum SyncProtocol {
     /// opcionais, então v1 lê pacotes v0. Pacote de versão maior que esta:
     /// não lê e pede pra atualizar o app.
     static let version = 1
+    /// Versão do snapshot que o iPad escreve. v2: `pages` (estante de leitura).
+    /// A versão é por tipo de pacote: a caixa de entrada continua v1.
+    static let snapshotVersion = 2
     static let kindAudioMemo = "audio_memo"
 }
 
@@ -57,6 +60,22 @@ struct SnapshotDTO: Codable {
     let memoUpdates: [MemoUpdateDTO]
     /// v1: fitas deste celular apagadas no iPad (últimos 90 dias).
     let deletedMemoIds: [String]
+    /// v2: páginas dos cadernos não protegidos, para a estante de leitura.
+    let pages: [PageDTO]
+}
+
+/// v2: uma página, só para ler. A imagem fica no relay em `imageKey`
+/// (cifrada com essa chave como AAD); cada revisão tem chave própria.
+struct PageDTO: Codable, Hashable {
+    let id: String
+    let notebookId: String
+    let sectionId: String
+    let order: Int
+    let rev: Int64
+    let imageKey: String
+    let width: Int
+    let height: Int
+    let text: String?
 }
 
 struct SectionDTO: Codable, Hashable {

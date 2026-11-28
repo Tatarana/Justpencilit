@@ -59,6 +59,11 @@ final class RelaySync {
     /// Fitas apagadas aqui são avisadas ao celular por este tempo. Um celular
     /// parado mais que isso pode ficar com uma cópia velha — ele mesmo apaga.
     private static let tombstoneLifetime: TimeInterval = 90 * 24 * 60 * 60
+    /// Quantas imagens de página gerar e subir por rodada (fase 2). A primeira
+    /// sincronização de um iPad cheio leva várias rodadas; a estante do celular
+    /// vai enchendo aos poucos, sem travar o app.
+    private static let foregroundImageBudget = 12
+    private static let backgroundImageBudget = 4
 
     // MARK: - Pareamento
 
@@ -105,6 +110,8 @@ final class RelaySync {
         pairings = remaining
         statusByMailbox[pairing.mailboxID] = nil
         UserDefaults.standard.removeObject(forKey: Self.snapshotHashKey(pairing.mailboxID))
+        UserDefaults.standard.removeObject(forKey: Self.uploadedImagesKey(pairing.mailboxID))
+        UserDefaults.standard.removeObject(forKey: Self.staleImagesKey(pairing.mailboxID))
         if let deviceID = pairing.deviceID { Tombstones.clear(deviceID: deviceID) }
         return deletedOnServer
     }
@@ -123,7 +130,12 @@ final class RelaySync {
         defer { isRunning = false }
 
         for pairing in pairings {
-            statusByMailbox[pairing.mailboxID] = await syncOne(pairing, modelContext: modelContext, transcribe: !inBackground)
+            statusByMailbox[pairing.mailboxID] = await syncOne(
+                pairing,
+                modelContext: modelContext,
+                transcribe: !inBackground,
+                imageBudget: inBackground ? Self.backgroundImageBudget : Self.foregroundImageBudget
+            )
         }
         if !inBackground { resumeTranscriptions(modelContext: modelContext) }
     }
@@ -145,7 +157,7 @@ final class RelaySync {
     func publishSnapshots(modelContext: ModelContext) async {
         for pairing in pairings {
             guard let client = pairing.client else { continue }
-            try? await publishSnapshot(for: pairing, client: client, modelContext: modelContext)
+            try? await publishSnapshot(for: pairing, client: client, modelContext: modelContext, imageBudget: 0)
         }
     }
 
@@ -156,17 +168,19 @@ final class RelaySync {
         Tombstones.add(memoID: memo.id.uuidString, deviceID: deviceID)
     }
 
-    private func syncOne(_ pairing: RelayPairing, modelContext: ModelContext, transcribe: Bool) async -> Status {
+    private func syncOne(_ pairing: RelayPairing, modelContext: ModelContext, transcribe: Bool, imageBudget: Int) async -> Status {
         guard let client = pairing.client else { return .failed("Endereço do servidor inválido.") }
         do {
             var current = pairing
             try await learnDevice(&current, client: client)
             let result = try await importInbox(&current, client: client, modelContext: modelContext, transcribe: transcribe)
             saveIfChanged(current, original: pairing)
+            // Mesmo com um pacote que não sabemos ler, o resto continua: as
+            // outras fitas entram e as transcrições voltam.
+            try await publishSnapshot(for: current, client: client, modelContext: modelContext, imageBudget: imageBudget)
             if let newerVersion = result.newerVersionSeen {
                 return .failed("A Caderneta deste celular está numa versão mais nova (protocolo \(newerVersion)). Atualize o JustPencilIt.")
             }
-            try await publishSnapshot(for: current, client: client, modelContext: modelContext)
             return .done(at: Date(), imported: result.imported)
         } catch let error as RelayError {
             switch error {
@@ -333,14 +347,17 @@ final class RelaySync {
         let sections: [SectionDTO]
         let memoUpdates: [MemoUpdateDTO]
         let deletedMemoIds: [String]
+        let pages: [PageDTO]
     }
 
     private static func snapshotHashKey(_ mailboxID: String) -> String {
         "sync.\(mailboxID).lastSnapshotHash"
     }
 
-    private func publishSnapshot(for pairing: RelayPairing, client: RelayClient, modelContext: ModelContext) async throws {
-        let body = try snapshotBody(for: pairing, modelContext)
+    private func publishSnapshot(for pairing: RelayPairing, client: RelayClient, modelContext: ModelContext, imageBudget: Int) async throws {
+        let base = try snapshotBody(for: pairing, modelContext)
+        let pages = try await publishPageImages(for: pairing, client: client, modelContext: modelContext, budget: imageBudget)
+        let body = SnapshotBody(sections: base.sections, memoUpdates: base.memoUpdates, deletedMemoIds: base.deletedMemoIds, pages: pages.dtos)
 
         // Só sobe quando o conteúdo mudou — a rodada periódica quase sempre
         // termina aqui, sem gastar rede.
@@ -352,16 +369,90 @@ final class RelaySync {
         guard hash != UserDefaults.standard.string(forKey: hashKey) else { return }
 
         let snapshot = SnapshotDTO(
-            protocolVersion: SyncProtocol.version,
+            protocolVersion: SyncProtocol.snapshotVersion,
             generatedAt: Date().millisecondsSince1970,
             sections: body.sections,
             memoUpdates: body.memoUpdates,
-            deletedMemoIds: body.deletedMemoIds
+            deletedMemoIds: body.deletedMemoIds,
+            pages: body.pages
         )
         let json = try JSONEncoder().encode(snapshot)
         let sealed = try RelayCrypto.seal(json, key: pairing.keys.encKey, objectKey: Self.snapshotKey)
         try await client.put(Self.snapshotKey, data: sealed)
         UserDefaults.standard.set(hash, forKey: hashKey)
+        pages.commit()
+    }
+
+    // MARK: Páginas da estante (fase 2)
+
+    /// O que foi enviado de imagens, por caixa: chave → [largura, altura].
+    private static func uploadedImagesKey(_ mailboxID: String) -> String { "sync.\(mailboxID).pageImages" }
+    /// Imagens que o último manifest deixou de usar: somem na rodada seguinte.
+    private static func staleImagesKey(_ mailboxID: String) -> String { "sync.\(mailboxID).stalePageImages" }
+
+    /// As páginas que entram no snapshot, mais o que fazer depois de publicar.
+    private struct PublishedPages {
+        let dtos: [PageDTO]
+        let commit: () -> Void
+    }
+
+    /// Ordem (PROTOCOL.md §5.1 do relay): apaga as imagens velhas da rodada
+    /// anterior → sobe as que faltam (até `budget`) → o manifest só cita
+    /// imagens que já estão no relay → depois de publicar, as que ele deixou de
+    /// usar viram as velhas da próxima rodada.
+    private func publishPageImages(for pairing: RelayPairing, client: RelayClient, modelContext: ModelContext, budget: Int) async throws -> PublishedPages {
+        let defaults = UserDefaults.standard
+        let uploadedKey = Self.uploadedImagesKey(pairing.mailboxID)
+        let staleKey = Self.staleImagesKey(pairing.mailboxID)
+
+        // Quem leu o manifest anterior já teve uma rodada inteira para baixar.
+        for old in defaults.stringArray(forKey: staleKey) ?? [] {
+            try await client.delete(old)
+        }
+        defaults.removeObject(forKey: staleKey)
+
+        var uploaded = (defaults.dictionary(forKey: uploadedKey) as? [String: [Int]]) ?? [:]
+        var remaining = budget
+        var dtos: [PageDTO] = []
+
+        let notebooks = try modelContext.fetch(FetchDescriptor<Notebook>(sortBy: [SortDescriptor(\.createdAt)]))
+        for notebook in notebooks where !(notebook.isLocked || (notebook.group?.isLocked ?? false)) {
+            for section in notebook.sortedSections {
+                for page in section.sortedPages {
+                    let rev = page.updatedAt.millisecondsSince1970
+                    let imageKey = "snapshot/pages/\(page.id.uuidString)-\(rev).jpg"
+                    if uploaded[imageKey] == nil {
+                        // Ainda não está no relay: gera agora, se couber nesta rodada.
+                        guard remaining > 0, let rendered = PageImageRenderer.render(page) else { continue }
+                        remaining -= 1
+                        let sealed = try RelayCrypto.seal(rendered.jpeg, key: pairing.keys.encKey, objectKey: imageKey)
+                        try await client.put(imageKey, data: sealed)
+                        uploaded[imageKey] = [rendered.width, rendered.height]
+                        defaults.set(uploaded, forKey: uploadedKey) // não reenviar se a rodada cair no meio
+                    }
+                    let size = uploaded[imageKey] ?? [0, 0]
+                    dtos.append(PageDTO(
+                        id: page.id.uuidString,
+                        notebookId: notebook.id.uuidString,
+                        sectionId: section.id.uuidString,
+                        order: page.order,
+                        rev: rev,
+                        imageKey: imageKey,
+                        width: size.first ?? 0,
+                        height: size.last ?? 0,
+                        text: page.recognizedText.isEmpty ? nil : page.recognizedText
+                    ))
+                }
+            }
+        }
+
+        let current = Set(dtos.map(\.imageKey))
+        return PublishedPages(dtos: dtos) {
+            // Só depois do manifest novo no ar: o que ele não usa mais vira velho.
+            let stale = uploaded.keys.filter { !current.contains($0) }
+            defaults.set(stale, forKey: staleKey)
+            defaults.set(uploaded.filter { current.contains($0.key) }, forKey: uploadedKey)
+        }
     }
 
     private func snapshotBody(for pairing: RelayPairing, _ modelContext: ModelContext) throws -> SnapshotBody {
@@ -383,7 +474,7 @@ final class RelaySync {
 
         // Só as fitas que vieram DESTE celular.
         guard let deviceID = pairing.deviceID else {
-            return SnapshotBody(sections: sections, memoUpdates: [], deletedMemoIds: [])
+            return SnapshotBody(sections: sections, memoUpdates: [], deletedMemoIds: [], pages: [])
         }
         let memos = try modelContext.fetch(FetchDescriptor<AudioMemo>(sortBy: [SortDescriptor(\.createdAt)]))
         let updates = memos.filter { $0.originDeviceID == deviceID }.map { memo in
@@ -397,7 +488,7 @@ final class RelaySync {
             )
         }
         let deleted = Tombstones.memoIDs(deviceID: deviceID, maxAge: Self.tombstoneLifetime)
-        return SnapshotBody(sections: sections, memoUpdates: updates, deletedMemoIds: deleted)
+        return SnapshotBody(sections: sections, memoUpdates: updates, deletedMemoIds: deleted, pages: [])
     }
 
     // MARK: Utilidades
