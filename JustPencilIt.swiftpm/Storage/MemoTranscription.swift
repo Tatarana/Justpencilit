@@ -6,15 +6,23 @@ import SwiftData
 /// Antes cada tela tinha a sua cópia deste código.
 @MainActor
 enum MemoTranscription {
+    /// Memos sendo transcritos agora, para não começar duas vezes o mesmo.
+    private static var running: Set<UUID> = []
+
+    static func isRunning(_ id: UUID) -> Bool { running.contains(id) }
+
     /// Marca o memo como "transcrevendo" e roda em segundo plano, 100% no
     /// aparelho (`SpeechTranscriptionService`). `onFinish` roda no fim, com
     /// sucesso ou falha.
     static func start(_ memo: AudioMemo, in modelContext: ModelContext, onFinish: (() -> Void)? = nil) {
         let memoID = memo.id
+        guard !running.contains(memoID) else { return }
+        running.insert(memoID)
         let fileURL = AudioStore.url(for: memo.audioFileName)
         memo.transcriptionStatus = .transcribing
 
         Task { @MainActor in
+            defer { running.remove(memoID) }
             var text: String?
             do {
                 text = try await SpeechTranscriptionService.transcribe(fileURL: fileURL)

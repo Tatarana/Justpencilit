@@ -114,13 +114,29 @@ final class RelaySync {
     /// Uma rodada com cada celular: importa a caixa de entrada e publica o
     /// snapshot se mudou. Barato quando não há nada novo (uma listagem e
     /// nenhum envio por celular).
-    func syncNow(modelContext: ModelContext) async {
+    ///
+    /// [inBackground]: rodada do `BGAppRefreshTask` — importa, mas deixa a
+    /// transcrição para quando o app abrir (ver `RelayBackgroundSync`).
+    func syncNow(modelContext: ModelContext, inBackground: Bool = false) async {
         guard !isRunning, !pairings.isEmpty else { return }
         isRunning = true
         defer { isRunning = false }
 
         for pairing in pairings {
-            statusByMailbox[pairing.mailboxID] = await syncOne(pairing, modelContext: modelContext)
+            statusByMailbox[pairing.mailboxID] = await syncOne(pairing, modelContext: modelContext, transcribe: !inBackground)
+        }
+        if !inBackground { resumeTranscriptions(modelContext: modelContext) }
+    }
+
+    /// Fitas do celular que ficaram sem transcrição: chegaram em segundo plano
+    /// (ficam "pendentes") ou o app foi fechado no meio (ficam "transcrevendo"
+    /// sem ninguém transcrevendo de fato).
+    private func resumeTranscriptions(modelContext: ModelContext) {
+        guard let memos = try? modelContext.fetch(FetchDescriptor<AudioMemo>()) else { return }
+        for memo in memos where memo.originDeviceID != nil {
+            let stuck = memo.transcriptionStatus == .pending
+                || (memo.transcriptionStatus == .transcribing && !MemoTranscription.isRunning(memo.id))
+            if stuck { MemoTranscription.start(memo, in: modelContext) }
         }
     }
 
@@ -140,12 +156,12 @@ final class RelaySync {
         Tombstones.add(memoID: memo.id.uuidString, deviceID: deviceID)
     }
 
-    private func syncOne(_ pairing: RelayPairing, modelContext: ModelContext) async -> Status {
+    private func syncOne(_ pairing: RelayPairing, modelContext: ModelContext, transcribe: Bool) async -> Status {
         guard let client = pairing.client else { return .failed("Endereço do servidor inválido.") }
         do {
             var current = pairing
             try await learnDevice(&current, client: client)
-            let result = try await importInbox(&current, client: client, modelContext: modelContext)
+            let result = try await importInbox(&current, client: client, modelContext: modelContext, transcribe: transcribe)
             saveIfChanged(current, original: pairing)
             if let newerVersion = result.newerVersionSeen {
                 return .failed("A Caderneta deste celular está numa versão mais nova (protocolo \(newerVersion)). Atualize o JustPencilIt.")
@@ -197,7 +213,7 @@ final class RelaySync {
         var newerVersionSeen: Int?
     }
 
-    private func importInbox(_ pairing: inout RelayPairing, client: RelayClient, modelContext: ModelContext) async throws -> ImportResult {
+    private func importInbox(_ pairing: inout RelayPairing, client: RelayClient, modelContext: ModelContext, transcribe: Bool) async throws -> ImportResult {
         let key = pairing.keys.encKey
         let objects = try await client.list(prefix: "inbox/")
         let existingKeys = Set(objects.map(\.key))
@@ -280,8 +296,12 @@ final class RelaySync {
             }
         }
 
-        for memo in newMemos {
-            MemoTranscription.start(memo, in: modelContext)
+        // Em segundo plano ficam "pendentes" e a próxima rodada com o app
+        // aberto transcreve (resumeTranscriptions).
+        if transcribe {
+            for memo in newMemos {
+                MemoTranscription.start(memo, in: modelContext)
+            }
         }
         return result
     }
