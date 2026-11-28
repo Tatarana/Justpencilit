@@ -34,6 +34,10 @@ final class AudioMemo: Identifiable {
     // Etiqueta opcional pra uma seção de caderno — não afeta onde o arquivo
     // fica salvo, só faz o memo aparecer também dentro daquele caderno.
     var section: Section?
+    // Preenchido quando a fita veio da Caderneta (Android) pela
+    // sincronização: o id do celular que gravou. É o que faz a transcrição
+    // voltar pra lá. Opcional com padrão nil — migra bancos antigos sem travar.
+    var originDeviceID: String? = nil
 
     init(title: String, coverColor: NotebookColor, audioFileName: String) {
         self.id = UUID()

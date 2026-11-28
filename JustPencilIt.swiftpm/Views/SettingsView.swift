@@ -9,6 +9,7 @@ enum AppSettingsKeys {
     static let leftHandedMode = "settings.leftHandedMode"
     static let defaultPaper = "settings.defaultPaper"
     static let useSystemToolPicker = "settings.useSystemToolPicker"
+    static let relayURL = "settings.relayURL"
 }
 
 /// Tela de ajustes do app — preferências de uso, não conteúdo dos cadernos,
@@ -38,6 +39,7 @@ struct SettingsView: View {
                 leftHandedSection
                 paperSection
                 toolSection
+                phoneSection
                 securitySection
                 resetSection
             }
@@ -90,6 +92,18 @@ struct SettingsView: View {
             }
         } footer: {
             Text("A do iPad tem todas as canetas, laço e régua, e fica igual à de outros apps. A antiga continua disponível aqui caso prefira.")
+        }
+    }
+
+    private var phoneSection: some View {
+        SwiftUI.Section {
+            NavigationLink {
+                PhonePairingView()
+            } label: {
+                Label("Celular (Caderneta)", systemImage: "iphone.gen3")
+            }
+        } footer: {
+            Text("Pareie a Caderneta no seu Android: as ideias gravadas no celular chegam aqui e são transcritas, de qualquer lugar com internet.")
         }
     }
 
